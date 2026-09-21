@@ -17,6 +17,27 @@ class MemoryStore extends RelayStore {
 }
 
 void main() {
+  testWidgets('phone dashboard keeps both shift choices above the fold', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RelayHome(store: MemoryStore(), onMenu: () {}),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('relay-brand-logo')), findsOneWidget);
+    expect(find.text('Start Focus').hitTestable(), findsOneWidget);
+    expect(find.text('Baby Time').hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('phone flow: focus, interrupt, resume, handoff, metrics', (
     tester,
   ) async {

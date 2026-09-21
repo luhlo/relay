@@ -347,17 +347,14 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
 
   Widget logo() => Row(
     children: [
-      Container(
-        width: 38,
-        height: 38,
-        decoration: BoxDecoration(
-          color: violet,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: const Icon(
-          Icons.swap_calls_rounded,
-          color: Colors.white,
-          size: 27,
+      ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Image.asset(
+          'assets/relay_icon.png',
+          key: const ValueKey('relay-brand-logo'),
+          width: 38,
+          height: 38,
+          fit: BoxFit.cover,
         ),
       ),
       const SizedBox(width: 10),
@@ -523,45 +520,53 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     String title,
     String subtitle, {
     Widget? trailing,
-  }) => Padding(
-    padding: const EdgeInsets.only(bottom: 26),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          eyebrow,
-          style: const TextStyle(
-            color: violet,
-            fontSize: 10,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 2,
+  }) {
+    final compact = MediaQuery.sizeOf(context).width < 600;
+    return Padding(
+      padding: EdgeInsets.only(bottom: compact ? 18 : 26),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            eyebrow,
+            style: const TextStyle(
+              color: violet,
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 2,
+            ),
           ),
-        ),
-        const SizedBox(height: 10),
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 32,
-                  height: 1.2,
-                  letterSpacing: -1.2,
-                  fontWeight: FontWeight.w800,
+          SizedBox(height: compact ? 7 : 10),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: compact ? 29 : 32,
+                    height: 1.2,
+                    letterSpacing: -1.2,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
+              ?trailing,
+            ],
+          ),
+          SizedBox(height: compact ? 6 : 10),
+          Text(
+            subtitle,
+            style: TextStyle(
+              color: muted,
+              fontSize: compact ? 13 : 14,
+              height: compact ? 1.4 : 1.6,
             ),
-            ?trailing,
-          ],
-        ),
-        const SizedBox(height: 10),
-        Text(
-          subtitle,
-          style: const TextStyle(color: muted, fontSize: 14, height: 1.6),
-        ),
-      ],
-    ),
-  );
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget dashboard(bool wide) {
     final active = data.active;
     return Column(
@@ -583,7 +588,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
             final left = Column(
               children: [
                 statusCard(),
-                const SizedBox(height: 18),
+                SizedBox(height: active == null && !wide ? 12 : 18),
                 if (active?.kind == ShiftKind.focus) ...[
                   focusActions(),
                   const SizedBox(height: 18),
@@ -619,6 +624,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   Widget statusCard() {
     final compact = MediaQuery.sizeOf(context).width < 600;
     final s = data.active, block = data.activeShift;
+    final compactIdle = compact && s == null;
     final interrupted = s?.interruption != null,
         focus = s?.kind == ShiftKind.focus;
     final color = interrupted
@@ -633,7 +639,13 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     final due = block != null && !block.end.isAfter(now);
     return Container(
       width: double.infinity,
-      padding: EdgeInsets.all(compact ? 20 : 28),
+      padding: EdgeInsets.all(
+        compactIdle
+            ? 16
+            : compact
+            ? 20
+            : 28,
+      ),
       decoration: BoxDecoration(
         color: color,
         borderRadius: BorderRadius.circular(24),
@@ -676,7 +688,13 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               ),
             ],
           ),
-          SizedBox(height: compact ? 12 : 22),
+          SizedBox(
+            height: compactIdle
+                ? 8
+                : compact
+                ? 12
+                : 22,
+          ),
           Text(
             interrupted
                 ? 'Interrupted'
@@ -689,12 +707,18 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                 : data.babyName(s.baby!),
             style: TextStyle(
               color: fg,
-              fontSize: 30,
+              fontSize: compactIdle ? 25 : 30,
               fontWeight: FontWeight.w800,
               letterSpacing: -1,
             ),
           ),
-          SizedBox(height: compact ? 5 : 8),
+          SizedBox(
+            height: compactIdle
+                ? 3
+                : compact
+                ? 5
+                : 8,
+          ),
           Text(
             interrupted
                 ? 'Take care of what matters. We’ll keep track.'
@@ -708,10 +732,20 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
             style: TextStyle(
               color: fg.withValues(alpha: .85),
               height: 1.5,
-              fontSize: compact ? 12 : 13,
+              fontSize: compactIdle
+                  ? 11
+                  : compact
+                  ? 12
+                  : 13,
             ),
           ),
-          SizedBox(height: compact ? 16 : 26),
+          SizedBox(
+            height: compactIdle
+                ? 9
+                : compact
+                ? 16
+                : 26,
+          ),
           FittedBox(
             fit: BoxFit.scaleDown,
             alignment: Alignment.centerLeft,
@@ -719,7 +753,11 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               clockText(max(0, seconds)),
               style: TextStyle(
                 color: fg,
-                fontSize: compact ? 52 : 62,
+                fontSize: compactIdle
+                    ? 38
+                    : compact
+                    ? 52
+                    : 62,
                 fontWeight: FontWeight.w600,
                 letterSpacing: -2,
                 fontFeatures: const [FontFeature.tabularFigures()],
@@ -734,7 +772,10 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                 : focus
                 ? 'actual focus'
                 : 'baby time',
-            style: TextStyle(color: fg.withValues(alpha: .8), fontSize: 12),
+            style: TextStyle(
+              color: fg.withValues(alpha: .8),
+              fontSize: compactIdle ? 11 : 12,
+            ),
           ),
           if (focus && s != null) ...[
             const SizedBox(height: 12),
@@ -747,43 +788,45 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               ),
             ),
           ],
-          SizedBox(height: compact ? 10 : 26),
-          Divider(color: fg.withValues(alpha: .2)),
-          SizedBox(height: compact ? 4 : 12),
-          Row(
-            children: [
-              Icon(Icons.schedule, color: fg, size: 17),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  block == null
-                      ? 'No rush. Start with one shift.'
-                      : due
-                      ? 'Handoff due · choose your next shift'
-                      : 'Next handoff at ${timeText(block.end)}',
-                  style: TextStyle(
-                    color: fg,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
+          if (!compactIdle) ...[
+            SizedBox(height: compact ? 10 : 26),
+            Divider(color: fg.withValues(alpha: .2)),
+            SizedBox(height: compact ? 4 : 12),
+            Row(
+              children: [
+                Icon(Icons.schedule, color: fg, size: 17),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    block == null
+                        ? 'No rush. Start with one shift.'
+                        : due
+                        ? 'Handoff due · choose your next shift'
+                        : 'Next handoff at ${timeText(block.end)}',
+                    style: TextStyle(
+                      color: fg,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-              ),
-              if (s != null)
-                TextButton(
-                  onPressed: busy
-                      ? null
-                      : () => change(
-                          () => data.finish(DateTime.now()),
-                          message: 'Shift complete. Your time is saved.',
-                        ),
-                  style: TextButton.styleFrom(
-                    foregroundColor: fg,
-                    minimumSize: const Size(48, 48),
+                if (s != null)
+                  TextButton(
+                    onPressed: busy
+                        ? null
+                        : () => change(
+                            () => data.finish(DateTime.now()),
+                            message: 'Shift complete. Your time is saved.',
+                          ),
+                    style: TextButton.styleFrom(
+                      foregroundColor: fg,
+                      minimumSize: const Size(48, 48),
+                    ),
+                    child: const Text('End shift'),
                   ),
-                  child: const Text('End shift'),
-                ),
-            ],
-          ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -798,6 +841,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   );
   Widget modeButton(ShiftKind kind) {
     final current = data.active?.kind == kind, focus = kind == ShiftKind.focus;
+    final compact = MediaQuery.sizeOf(context).width < 600;
     return Material(
       color: focus ? paleViolet : green,
       borderRadius: BorderRadius.circular(18),
@@ -809,8 +853,8 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
             : chooseBaby,
         borderRadius: BorderRadius.circular(18),
         child: Container(
-          constraints: const BoxConstraints(minHeight: 112),
-          padding: const EdgeInsets.all(19),
+          constraints: BoxConstraints(minHeight: compact ? 96 : 112),
+          padding: EdgeInsets.all(compact ? 16 : 19),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
