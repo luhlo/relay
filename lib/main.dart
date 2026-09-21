@@ -1357,6 +1357,13 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
         ? dayStart(now)
         : insightsRange?.end ?? dayStart(now);
     final until = nextDay(through);
+    final today = dayStart(now);
+    final yesterday = DateTime(today.year, today.month, today.day - 1);
+    final showingYesterday =
+        !insightsAllTime &&
+        insightsRange != null &&
+        DateUtils.isSameDay(insightsRange!.start, yesterday) &&
+        DateUtils.isSameDay(insightsRange!.end, yesterday);
     final interruptions = data.sessions
         .expand((s) => s.interruptions)
         .where((i) => i.start.isBefore(until) && (i.end ?? now).isAfter(from))
@@ -1394,6 +1401,14 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               }),
             ),
             ChoiceChip(
+              label: const Text('Yesterday'),
+              selected: showingYesterday,
+              onSelected: (_) => setState(() {
+                insightsAllTime = false;
+                insightsRange = DateTimeRange(start: yesterday, end: yesterday);
+              }),
+            ),
+            ChoiceChip(
               label: const Text('All time'),
               selected: insightsAllTime,
               onSelected: (_) => setState(() => insightsAllTime = true),
@@ -1420,9 +1435,57 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
           ],
         ),
         const SizedBox(height: 12),
-        Text(
-          '${DateFormat.yMMMd().format(from)} – ${DateFormat.yMMMd().format(through)}',
-          style: const TextStyle(color: muted),
+        Row(
+          children: [
+            IconButton(
+              tooltip: 'Previous Insights date',
+              onPressed: insightsAllTime
+                  ? null
+                  : () => setState(() {
+                      insightsRange = DateTimeRange(
+                        start: DateTime(from.year, from.month, from.day - 1),
+                        end: DateTime(
+                          through.year,
+                          through.month,
+                          through.day - 1,
+                        ),
+                      );
+                    }),
+              icon: const Icon(Icons.chevron_left),
+            ),
+            Expanded(
+              child: Text(
+                DateUtils.isSameDay(from, through)
+                    ? DateFormat.yMMMMd().format(from)
+                    : '${DateFormat.yMMMd().format(from)} – ${DateFormat.yMMMd().format(through)}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: muted),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Next Insights date',
+              onPressed: insightsAllTime || !through.isBefore(today)
+                  ? null
+                  : () => setState(() {
+                      final nextStart = DateTime(
+                        from.year,
+                        from.month,
+                        from.day + 1,
+                      );
+                      final nextEnd = DateTime(
+                        through.year,
+                        through.month,
+                        through.day + 1,
+                      );
+                      insightsRange =
+                          DateUtils.isSameDay(nextEnd, today) &&
+                              DateUtils.isSameDay(nextStart, nextEnd)
+                          ? null
+                          : DateTimeRange(start: nextStart, end: nextEnd);
+                    }),
+              icon: const Icon(Icons.chevron_right),
+            ),
+          ],
         ),
         const SizedBox(height: 22),
         TimePies(data: data, day: from, endDay: through, now: now),
@@ -1663,15 +1726,47 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                                     initialTime: TimeOfDay.fromDateTime(start),
                                   );
                                   if (t != null) {
-                                    update(
-                                      () => start = DateTime(
+                                    update(() {
+                                      start = DateTime(
                                         base.year,
                                         base.month,
                                         base.day,
                                         t.hour,
                                         t.minute,
-                                      ),
+                                      );
+                                      if (!end.isAfter(start)) {
+                                        end = start.add(
+                                          const Duration(hours: 1),
+                                        );
+                                      }
+                                    });
+                                    if (!sheetContext.mounted) return;
+                                    final endTime = await showTimePicker(
+                                      context: sheetContext,
+                                      initialTime: TimeOfDay.fromDateTime(end),
+                                      helpText: 'Choose end time',
                                     );
+                                    if (endTime != null &&
+                                        sheetContext.mounted) {
+                                      update(() {
+                                        end = DateTime(
+                                          base.year,
+                                          base.month,
+                                          base.day,
+                                          endTime.hour,
+                                          endTime.minute,
+                                        );
+                                        if (!end.isAfter(start)) {
+                                          end = DateTime(
+                                            base.year,
+                                            base.month,
+                                            base.day + 1,
+                                            endTime.hour,
+                                            endTime.minute,
+                                          );
+                                        }
+                                      });
+                                    }
                                   }
                                 },
                           child: Padding(

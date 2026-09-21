@@ -141,4 +141,72 @@ void main() {
     expect(find.byTooltip('Open account menu'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('Insights supports Yesterday and adjacent date arrows', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(MaterialApp(home: RelayHome(store: MemoryStore())));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Insights'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Yesterday'));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<ChoiceChip>(find.widgetWithText(ChoiceChip, 'Yesterday'))
+          .selected,
+      isTrue,
+    );
+    expect(find.byTooltip('Previous Insights date'), findsOneWidget);
+    expect(find.byTooltip('Next Insights date'), findsOneWidget);
+    await tester.tap(find.byTooltip('Previous Insights date'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<ChoiceChip>(find.widgetWithText(ChoiceChip, 'Yesterday'))
+          .selected,
+      isFalse,
+    );
+    await tester.tap(find.byTooltip('Next Insights date'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<ChoiceChip>(find.widgetWithText(ChoiceChip, 'Yesterday'))
+          .selected,
+      isTrue,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('choosing a start time immediately opens end time', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(MaterialApp(home: RelayHome(store: MemoryStore())));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Schedule'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add a shift'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Start\n'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TimePickerDialog), findsOneWidget);
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TimePickerDialog), findsOneWidget);
+    expect(find.text('Choose end time'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
 }
