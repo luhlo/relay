@@ -52,6 +52,8 @@ void main() {
                 builder: (_) => LocalAccountSettings(
                   store: store,
                   initialChildNames: store.state.childNames,
+                  initialPersonalTimeEnabled: store.state.personalTimeEnabled,
+                  initialDailyPersonalHours: store.state.dailyPersonalHours,
                   onSignIn: () {},
                 ),
               ),
@@ -70,11 +72,27 @@ void main() {
     await tester.enterText(fields.at(0), 'Ava');
     await tester.enterText(fields.at(1), '');
     await tester.enterText(fields.at(2), 'Noah');
-    await tester.ensureVisible(find.text('Save child settings'));
-    await tester.tap(find.text('Save child settings'));
+    await tester.ensureVisible(find.text('Daily personal-time agreement'));
+    await tester.tap(find.text('Daily personal-time agreement'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('3 hours'));
+    await tester.tap(find.text('3 hours'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('5 hours').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Save settings'));
+    await tester.tap(find.text('Save settings'));
     await tester.pumpAndSettle();
 
     expect(store.state.childNames, ['Ava', 'Baby 2', 'Noah']);
+    expect(store.state.personalTimeEnabled, isTrue);
+    expect(store.state.dailyPersonalHours, 5);
     expect(tester.takeException(), isNull);
+  });
+
+  test('personal-time agreement uses the selected number of hours', () {
+    expect(personalTimeAgreement(1), contains('1 hour of personal time'));
+    expect(personalTimeAgreement(3), contains('3 hours of personal time'));
+    expect(personalTimeAgreement(3), contains('time bank'));
   });
 }

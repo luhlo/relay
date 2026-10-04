@@ -2,6 +2,27 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:relay/model.dart';
 
 void main() {
+  test(
+    'personal-time settings serialize with backwards-compatible defaults',
+    () {
+      final state = RelayState(
+        personalTimeEnabled: true,
+        dailyPersonalHours: 4,
+      );
+      final copy = RelayState.fromJson(state.toJson());
+      expect(copy.personalTimeEnabled, isTrue);
+      expect(copy.dailyPersonalHours, 4);
+
+      final old = RelayState.fromJson({
+        'alerts': false,
+        'shifts': <dynamic>[],
+        'sessions': <dynamic>[],
+      });
+      expect(old.personalTimeEnabled, isFalse);
+      expect(old.dailyPersonalHours, 3);
+    },
+  );
+
   test('inclusive range clips boundaries and preserves childcare totals', () {
     final data = RelayState();
     final from = DateTime(2026, 1, 1), end = DateTime(2026, 3, 1);

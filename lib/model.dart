@@ -124,6 +124,8 @@ class RelayState {
     List<Shift>? shifts,
     List<Session>? sessions,
     this.alerts = false,
+    this.personalTimeEnabled = false,
+    this.dailyPersonalHours = 3,
     List<String>? childNames,
     String? childOne,
     String? childTwo,
@@ -133,6 +135,8 @@ class RelayState {
   final List<Shift> shifts;
   final List<Session> sessions;
   bool alerts;
+  bool personalTimeEnabled;
+  int dailyPersonalHours;
   List<String> childNames;
   String get childOne => childNames.first;
   set childOne(String value) => childNames[0] = value;
@@ -345,11 +349,13 @@ class RelayState {
   }
 
   Map<String, dynamic> toJson() => {
-    'version': 3,
+    'version': 4,
     'childNames': childNames,
     'childOne': childOne,
     'childTwo': childTwo,
     'alerts': alerts,
+    'personalTimeEnabled': personalTimeEnabled,
+    'dailyPersonalHours': dailyPersonalHours,
     'shifts': shifts.map((s) => s.toJson()).toList(),
     'sessions': sessions.map((s) => s.toJson()).toList(),
   };
@@ -358,6 +364,8 @@ class RelayState {
         ? [j['childOne'] ?? 'Baby 1', j['childTwo'] ?? 'Baby 2']
         : List<String>.from(j['childNames']),
     alerts: j['alerts'] ?? false,
+    personalTimeEnabled: j['personalTimeEnabled'] ?? false,
+    dailyPersonalHours: (j['dailyPersonalHours'] as num?)?.toInt() ?? 3,
     shifts: (j['shifts'] as List).map((e) => Shift.fromJson(e)).toList(),
     sessions: (j['sessions'] as List).map((e) => Session.fromJson(e)).toList(),
   );

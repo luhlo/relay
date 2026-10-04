@@ -24,6 +24,15 @@ List<String> householdChildren(Map<String, dynamic> household) {
   ];
 }
 
+String personalTimeAgreement(int hours) {
+  final duration = hours == 1 ? '1 hour' : '$hours hours';
+  return 'Each person gets $duration of personal time every day, Monday through Sunday. '
+      'You can coordinate the schedule together each day.\n\n'
+      'Personal time can be used for anything you need to do on your own, including work, school, showering, using the bathroom, running errands, grocery shopping, or simply taking personal time.\n\n'
+      'If your time is interrupted, you may pause the clock. The person whose personal-time period is active is responsible for tracking their time and interruptions and sharing the final time with the other person during the handoff.\n\n'
+      'If one person needs more than $duration on a particular day, the other person receives one additional hour in their time bank. That free hour can be used whenever they choose.';
+}
+
 class AccountGate extends StatefulWidget {
   const AccountGate({super.key});
   @override
@@ -119,6 +128,8 @@ class _AccountGateState extends State<AccountGate> {
         builder: (_) => LocalAccountSettings(
           store: localStore,
           initialChildNames: state.childNames,
+          initialPersonalTimeEnabled: state.personalTimeEnabled,
+          initialDailyPersonalHours: state.dailyPersonalHours,
           onSignIn: () {
             Navigator.pop(context, false);
             setState(() => local = false);
@@ -196,10 +207,14 @@ class LocalAccountSettings extends StatefulWidget {
     super.key,
     required this.store,
     required this.initialChildNames,
+    required this.initialPersonalTimeEnabled,
+    required this.initialDailyPersonalHours,
     required this.onSignIn,
   });
   final RelayStore store;
   final List<String> initialChildNames;
+  final bool initialPersonalTimeEnabled;
+  final int initialDailyPersonalHours;
   final VoidCallback onSignIn;
 
   @override
@@ -211,6 +226,8 @@ class _LocalAccountSettingsState extends State<LocalAccountSettings> {
     for (final name in widget.initialChildNames)
       TextEditingController(text: name),
   ];
+  late bool personalTimeEnabled = widget.initialPersonalTimeEnabled;
+  late int dailyPersonalHours = widget.initialDailyPersonalHours;
   bool busy = false;
   String? message;
 
@@ -244,6 +261,8 @@ class _LocalAccountSettingsState extends State<LocalAccountSettings> {
               ? 'Baby ${entry.$1 + 1}'
               : entry.$2.text.trim(),
       ];
+      state.personalTimeEnabled = personalTimeEnabled;
+      state.dailyPersonalHours = dailyPersonalHours;
       await widget.store.save(state);
       if (mounted) Navigator.pop(context, true);
     } catch (_) {
@@ -292,10 +311,44 @@ class _LocalAccountSettingsState extends State<LocalAccountSettings> {
         const Text(
           'Leave a name blank and Relay will use Baby 1, Baby 2, and so on.',
         ),
+        const Divider(),
+        SwitchListTile.adaptive(
+          contentPadding: EdgeInsets.zero,
+          title: const Text(
+            'Daily personal-time agreement',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          subtitle: const Text(
+            'Give each person the same amount of protected personal time every day.',
+          ),
+          value: personalTimeEnabled,
+          onChanged: busy
+              ? null
+              : (value) => setState(() => personalTimeEnabled = value),
+        ),
+        if (personalTimeEnabled) ...[
+          DropdownButtonFormField<int>(
+            initialValue: dailyPersonalHours,
+            decoration: const InputDecoration(
+              labelText: 'Hours per person each day',
+            ),
+            items: [
+              for (var hours = 1; hours <= 12; hours++)
+                DropdownMenuItem(
+                  value: hours,
+                  child: Text(hours == 1 ? '1 hour' : '$hours hours'),
+                ),
+            ],
+            onChanged: busy
+                ? null
+                : (value) => setState(() => dailyPersonalHours = value!),
+          ),
+          Text(personalTimeAgreement(dailyPersonalHours)),
+        ],
         if (message != null) Text(message!),
         FilledButton(
           onPressed: busy ? null : save,
-          child: Text(busy ? 'Saving…' : 'Save child settings'),
+          child: Text(busy ? 'Saving…' : 'Save settings'),
         ),
         const Divider(),
         OutlinedButton(
@@ -839,6 +892,9 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
     text: widget.household['name'] as String,
   );
   bool busy = false;
+  bool personalTimeEnabled = false;
+  int dailyPersonalHours = 3;
+  bool loadingPersonalTime = true;
   String inviteRole = 'caregiver';
   String? message, invitation;
   List<Map<String, dynamic>> members = [];
@@ -846,6 +902,7 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
   void initState() {
     super.initState();
     loadMembers();
+    loadPersonalTimeSettings();
   }
 
   @override
@@ -869,6 +926,35 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
       widget.household['name'] = name;
       message = 'Family name updated.';
     });
+  }
+
+  Future<void> savePersonalTimeSettings() async {
+    await run(() async {
+      final state = await widget.store.load();
+      state.personalTimeEnabled = personalTimeEnabled;
+      state.dailyPersonalHours = dailyPersonalHours;
+      await widget.store.save(state);
+      message = 'Personal-time agreement saved to your account.';
+    });
+  }
+
+  Future<void> loadPersonalTimeSettings() async {
+    try {
+      final state = await widget.store.load();
+      if (!mounted) return;
+      setState(() {
+        personalTimeEnabled = state.personalTimeEnabled;
+        dailyPersonalHours = state.dailyPersonalHours;
+        loadingPersonalTime = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        loadingPersonalTime = false;
+        message =
+            'Could not load personal-time settings. Reopen this page to retry.';
+      });
+    }
   }
 
   Future<void> loadMembers() async {
@@ -963,6 +1049,46 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
         Text(householdChildren(widget.household).join(' · ')),
         const Text(
           'Cloud changes require a connection. Use Refresh to load changes made on another device.',
+        ),
+        const Divider(),
+        SwitchListTile.adaptive(
+          contentPadding: EdgeInsets.zero,
+          title: const Text(
+            'Daily personal-time agreement',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          subtitle: const Text(
+            'Give each person the same amount of protected personal time every day. This preference is saved to your account.',
+          ),
+          value: personalTimeEnabled,
+          onChanged: busy || loadingPersonalTime
+              ? null
+              : (value) => setState(() => personalTimeEnabled = value),
+        ),
+        if (personalTimeEnabled) ...[
+          DropdownButtonFormField<int>(
+            initialValue: dailyPersonalHours,
+            decoration: const InputDecoration(
+              labelText: 'Hours per person each day',
+            ),
+            items: [
+              for (var hours = 1; hours <= 12; hours++)
+                DropdownMenuItem(
+                  value: hours,
+                  child: Text(hours == 1 ? '1 hour' : '$hours hours'),
+                ),
+            ],
+            onChanged: busy
+                ? null
+                : (value) => setState(() => dailyPersonalHours = value!),
+          ),
+          Text(personalTimeAgreement(dailyPersonalHours)),
+        ],
+        FilledButton(
+          onPressed: busy || loadingPersonalTime
+              ? null
+              : savePersonalTimeSettings,
+          child: const Text('Save personal-time settings'),
         ),
         const Text(
           'Family members',

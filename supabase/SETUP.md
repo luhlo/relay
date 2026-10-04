@@ -6,6 +6,7 @@ Project: `mhfkjrtrfdnmjmmvlueg`. The base and family-onboarding migrations were 
 
 - Supabase email/password authentication, verified email, password recovery.
 - One household per account, with an owner and invited parents or caregivers. A family can configure one to eight child names; blank names become Baby 1, Baby 2, and so on.
+- Each account can turn on an equal daily personal-time agreement and choose between 1 and 12 hours per person. The preference is stored in that account's existing cloud record; local users keep it on their device.
 - Parent tracking (shifts, sessions, interruption timestamps) is stored in a versioned JSON record per parent. Partners can read each other's Insights but cannot edit one another's records. The UI uses the current device timezone; timestamps are stored as UTC instants.
 - Saves require a connection. There is no offline cloud write queue. Optimistic revision checks reject stale writes; Refresh reloads the server copy. An uncertain network result must be resolved by Refresh.
 - Local SQLite/browser records stay separate. The import action copies local history only into an empty account, with confirmation; the original device copy remains unchanged.
