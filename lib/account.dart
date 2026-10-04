@@ -895,6 +895,7 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
   bool personalTimeEnabled = false;
   int dailyPersonalHours = 3;
   bool loadingPersonalTime = true;
+  CloudStore? personalTimeStore;
   String inviteRole = 'caregiver';
   String? message, invitation;
   List<Map<String, dynamic>> members = [];
@@ -902,7 +903,6 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
   void initState() {
     super.initState();
     loadMembers();
-    loadPersonalTimeSettings();
   }
 
   @override
@@ -930,19 +930,31 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
 
   Future<void> savePersonalTimeSettings() async {
     await run(() async {
-      final state = await widget.store.load();
+      final agreementStore = personalTimeStore;
+      if (agreementStore == null || widget.member['role'] != 'owner') {
+        throw CloudSaveException(
+          'Only the household owner can change this agreement.',
+        );
+      }
+      final state = await agreementStore.load();
       state.personalTimeEnabled = personalTimeEnabled;
       state.dailyPersonalHours = dailyPersonalHours;
-      await widget.store.save(state);
-      message = 'Personal-time agreement saved to your account.';
+      await agreementStore.save(state);
+      message = 'Personal-time agreement updated for your household.';
     });
   }
 
-  Future<void> loadPersonalTimeSettings() async {
+  Future<void> loadPersonalTimeSettings(String ownerId) async {
     try {
-      final state = await widget.store.load();
+      final agreementStore = CloudStore(
+        Supabase.instance.client,
+        ownerId,
+        householdChildren(widget.household),
+      );
+      final state = await agreementStore.load();
       if (!mounted) return;
       setState(() {
+        personalTimeStore = agreementStore;
         personalTimeEnabled = state.personalTimeEnabled;
         dailyPersonalHours = state.dailyPersonalHours;
         loadingPersonalTime = false;
@@ -963,7 +975,18 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
           .from('household_members')
           .select()
           .eq('household_id', widget.household['id']);
+      final owner = rows.cast<Map<String, dynamic>>().where(
+        (row) => row['role'] == 'owner',
+      );
       if (mounted) setState(() => members = rows);
+      if (owner.isNotEmpty) {
+        await loadPersonalTimeSettings(owner.first['user_id'] as String);
+      } else if (mounted) {
+        setState(() {
+          loadingPersonalTime = false;
+          message = 'Could not find the household owner.';
+        });
+      }
     } catch (_) {
       if (mounted) {
         setState(
@@ -1058,10 +1081,11 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
             style: TextStyle(fontWeight: FontWeight.bold),
           ),
           subtitle: const Text(
-            'Give each person the same amount of protected personal time every day. This preference is saved to your account.',
+            'Give each person the same amount of protected personal time every day. The household owner manages this shared agreement.',
           ),
           value: personalTimeEnabled,
-          onChanged: busy || loadingPersonalTime
+          onChanged:
+              busy || loadingPersonalTime || widget.member['role'] != 'owner'
               ? null
               : (value) => setState(() => personalTimeEnabled = value),
         ),
@@ -1078,18 +1102,19 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
                   child: Text(hours == 1 ? '1 hour' : '$hours hours'),
                 ),
             ],
-            onChanged: busy
+            onChanged: busy || widget.member['role'] != 'owner'
                 ? null
                 : (value) => setState(() => dailyPersonalHours = value!),
           ),
           Text(personalTimeAgreement(dailyPersonalHours)),
         ],
-        FilledButton(
-          onPressed: busy || loadingPersonalTime
-              ? null
-              : savePersonalTimeSettings,
-          child: const Text('Save personal-time settings'),
-        ),
+        if (widget.member['role'] == 'owner')
+          FilledButton(
+            onPressed: busy || loadingPersonalTime
+                ? null
+                : savePersonalTimeSettings,
+            child: const Text('Save personal-time settings'),
+          ),
         const Text(
           'Family members',
           style: TextStyle(fontWeight: FontWeight.bold),
