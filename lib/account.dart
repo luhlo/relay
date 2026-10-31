@@ -10,6 +10,7 @@ import 'cloud.dart';
 import 'main.dart' show RelayHome;
 import 'model.dart';
 import 'storage.dart';
+import 'home_widget.dart';
 
 String get authRedirect => kIsWeb
     ? '${Uri.base.origin}${Uri.base.path}'
@@ -78,6 +79,14 @@ class _AccountGateState extends State<AccountGate> {
       loadedUser = uid;
     });
     try {
+      if (uid == null) {
+        final pending = await RelayHomeWidget.instance.pendingContext();
+        if (pending == 'local') {
+          local = true;
+        } else if (!local) {
+          await RelayHomeWidget.instance.clear();
+        }
+      }
       if (uid != null) {
         final row = await client
             .from('household_members')
@@ -108,6 +117,7 @@ class _AccountGateState extends State<AccountGate> {
   Future<void> signOut() async {
     // Local sign-out also works offline and clears the saved Supabase session.
     await client.auth.signOut(scope: SignOutScope.local);
+    await RelayHomeWidget.instance.clear();
     final alerts = ShiftAlerts();
     await alerts.initialize();
     await alerts.sync(RelayState());
@@ -131,6 +141,7 @@ class _AccountGateState extends State<AccountGate> {
           initialPersonalTimeEnabled: state.personalTimeEnabled,
           initialDailyPersonalHours: state.dailyPersonalHours,
           onSignIn: () {
+            RelayHomeWidget.instance.clear();
             Navigator.pop(context, false);
             setState(() => local = false);
           },

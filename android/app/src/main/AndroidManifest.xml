@@ -35,6 +35,16 @@
                 <data android:scheme="app.relay.relay" android:host="login-callback"/>
             </intent-filter>
         </activity>
+        <receiver android:name=".RelayWidgetProvider" android:exported="false"
+            android:label="Relay · Work &amp; Baby Time">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/relay_widget_info" />
+        </receiver>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
