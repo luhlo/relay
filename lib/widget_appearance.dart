@@ -9,7 +9,8 @@ import 'storage.dart';
 const widgetColorChoices = <String, int>{
   'Violet': 0xFF6450CA,
   'Light green': 0xFFDDEAAD,
-  'Yellow': 0xFFF3C879,
+  'Yellow': 0xFFFFCC33,
+  'Amber': 0xFFF3C879,
   'Lilac': 0xFFEEEBFC,
   'Cream': 0xFFF7F7F2,
   'Ink': 0xFF24232C,
@@ -38,6 +39,7 @@ class _WidgetAppearanceState extends State<WidgetAppearance> {
   Map<String, String> get parts => {
     'work': 'Work Time',
     'baby': 'Baby Time',
+    'changeBaby': 'Change baby',
     'interruption': 'Interruption',
     'resume': 'Resume',
     'end': 'End',
@@ -425,7 +427,7 @@ class WidgetAppearancePreview extends StatelessWidget {
       childNames.isEmpty ? 0 : childNames.length - 1,
     );
     final name = childNames.isEmpty ? 'Baby 1' : childNames[childIndex];
-    final babyTime = selectingBaby || part == 'baby';
+    final babyTime = selectingBaby || part == 'baby' || part == 'changeBaby';
     final timerLabel = interrupted
         ? 'Interruption time'
         : part == 'allBabies'
@@ -456,7 +458,7 @@ class WidgetAppearancePreview extends StatelessWidget {
                 interrupted
                     ? 'resume'
                     : babyTime
-                    ? 'baby'
+                    ? 'changeBaby'
                     : 'interruption',
               ),
             ),

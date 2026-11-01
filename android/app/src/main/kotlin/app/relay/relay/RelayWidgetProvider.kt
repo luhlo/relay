@@ -88,13 +88,14 @@ open class RelayWidgetProvider : AppWidgetProvider() {
         private val defaultColors = mapOf(
             "work" to 0xFF6450CA.toInt(),
             "baby" to 0xFFDDEAAD.toInt(),
-            "interruption" to 0xFFF3C879.toInt(),
+            "interruption" to 0xFFFFCC33.toInt(),
             "resume" to 0xFF6450CA.toInt(),
             "end" to 0xFFDDEAAD.toInt(),
             "timer" to 0xFFEEEBFC.toInt(),
             "allBabies" to 0xFF6450CA.toInt(),
             "navigation" to 0xFFEEEBFC.toInt(),
             "notice" to 0xFFEEEBFC.toInt(),
+            "changeBaby" to 0xFF6450CA.toInt(),
         ) + (0..7).associate { index ->
             "child$index" to listOf(0xFFDDEAAD.toInt(), 0xFFEEEBFC.toInt(), 0xFFF3C879.toInt())[index % 3]
         }
@@ -122,20 +123,22 @@ open class RelayWidgetProvider : AppWidgetProvider() {
             return if (inkContrast >= whiteContrast) ink else Color.WHITE
         }
 
-        /** Migrate only the original default palette; an existing custom palette is preserved. */
+        /** Preserve custom palettes while upgrading the previous default yellow. */
         private fun migratePalette(prefs: SharedPreferences) {
-            if (prefs.getInt("paletteVersion", 0) >= 2) return
+            val version = prefs.getInt("paletteVersion", 0)
+            if (version >= 3) return
             val hasExtended = defaultColors.keys.any { it !in legacyDefaultColors && prefs.contains("color:$it") } ||
                 prefs.all.keys.any { it.startsWith("text:") }
-            val oldDefaults = !hasExtended && legacyDefaultColors.all { (role, color) ->
+            val oldDefaults = version < 2 && !hasExtended && legacyDefaultColors.all { (role, color) ->
                 prefs.contains("color:$role") && prefs.getInt("color:$role", color) == color
             }
             val edit = prefs.edit()
             for ((role, fallback) in defaultColors) {
-                val color = if (oldDefaults) fallback else prefs.getInt("color:$role", fallback)
+                val previous = prefs.getInt("color:$role", fallback)
+                val color = if (oldDefaults || (version == 2 && role == "interruption" && previous == 0xFFF3C879.toInt())) fallback else previous
                 edit.putInt("color:$role", color)
             }
-            edit.putInt("paletteVersion", 2).commit()
+            edit.putInt("paletteVersion", 3).commit()
         }
 
         private fun timerLabel(status: String?, supplied: String?, subtitle: String): String =
@@ -164,9 +167,10 @@ open class RelayWidgetProvider : AppWidgetProvider() {
             migratePalette(prefs)
             val edit = prefs.edit()
             val suppliedColors = snapshot["colors"] as? Map<*, *>
+            val suppliedVersion = (suppliedColors?.get("version") as? Number)?.toInt() ?: 0
             val sameSource = prefs.getString("context", null) == source
             val legacyDefaults = suppliedColors != null &&
-                ((suppliedColors["version"] as? Number)?.toInt() ?: 0) < 2 &&
+                suppliedVersion < 2 &&
                 !suppliedColors.containsKey("text") &&
                 defaultColors.keys.none { it !in legacyDefaultColors && suppliedColors.containsKey(it) } &&
                 legacyDefaultColors.all { (role, color) ->
@@ -178,6 +182,7 @@ open class RelayWidgetProvider : AppWidgetProvider() {
                 val color = when {
                     suppliedColors == null -> previous
                     legacyDefaults && role in legacyDefaultColors -> fallback
+                    suppliedVersion == 2 && role == "interruption" && opaqueColor(suppliedColors[role], 0) == 0xFFF3C879.toInt() -> fallback
                     suppliedColors.containsKey(role) -> opaqueColor(suppliedColors[role], fallback)
                     else -> previous
                 }
@@ -197,7 +202,7 @@ open class RelayWidgetProvider : AppWidgetProvider() {
                 .putString("childNames", JSONArray(names).toString())
                 .putString("subtitle", subtitle)
                 .putString("timerLabel", timerLabel(status, snapshot["timerLabel"] as? String, subtitle))
-                .putInt("paletteVersion", 2)
+                .putInt("paletteVersion", 3)
                 .putString("sessionStart", snapshot["sessionStart"] as? String)
                 .putString("message", (snapshot["message"] as? String).orEmpty().take(160))
                 .putLong("elapsedSeconds", max(0L, (snapshot["elapsedSeconds"] as? Number)?.toLong() ?: 0L))
@@ -348,7 +353,7 @@ open class RelayWidgetProvider : AppWidgetProvider() {
             style(R.id.widget_work, "work")
             style(R.id.widget_baby, "baby")
             style(R.id.widget_end, "end")
-            style(R.id.widget_change_baby, "baby")
+            style(R.id.widget_change_baby, "changeBaby")
             style(R.id.widget_interruption, if (status == "interrupted") "resume" else "interruption")
             style(R.id.widget_baby_0, "child0")
             style(R.id.widget_baby_1, "child1")
@@ -371,6 +376,9 @@ open class RelayWidgetProvider : AppWidgetProvider() {
                 rv.setInt(viewId, "setWidth", clockPx)
                 rv.setTextViewTextSize(viewId, TypedValue.COMPLEX_UNIT_SP, clockSp)
             }
+            val noticeDp = if (prefs.getString("message", "").orEmpty().isNotBlank()) 18 else 0
+            val labelPx = (max(0, width - clockDp - noticeDp) * context.resources.displayMetrics.density).toInt()
+            rv.setInt(R.id.widget_timer_label, "setMaxWidth", labelPx)
             rv.setTextViewTextSize(R.id.widget_timer_label, TypedValue.COMPLEX_UNIT_SP, if (width < 150) 10f else 11f)
             rv.setViewVisibility(R.id.widget_normal, if (choosing) View.GONE else View.VISIBLE)
             rv.setViewVisibility(R.id.widget_picker, if (choosing) View.VISIBLE else View.GONE)

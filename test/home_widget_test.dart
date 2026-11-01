@@ -65,7 +65,8 @@ void main() {
     final state = RelayState();
     final defaults = widgetSnapshot(state, 'local', start)['colors'] as Map;
     expect(defaults['baby'], 0xFFDDEAAD);
-    expect(defaults['interruption'], 0xFFF3C879);
+    expect(defaults['interruption'], 0xFFFFCC33);
+    expect(defaults['changeBaby'], isNot(defaults['end']));
     expect(defaults['resume'], isNot(defaults['interruption']));
     state.widgetColors = state.widgetColors.copyWith(baby: 0xFF336655);
     expect(

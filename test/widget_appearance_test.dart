@@ -76,12 +76,12 @@ void main() {
     await tester.ensureVisible(find.byKey(const ValueKey('widget-part')));
     await tester.tap(find.byKey(const ValueKey('widget-part')));
     await tester.pumpAndSettle();
-    await Scrollable.ensureVisible(
-      tester.element(find.text(label).last),
-      alignment: 0.5,
-    );
+    final menu = find.byType(Scrollable).last;
+    final option = find.descendant(of: menu, matching: find.text(label));
+    await tester.scrollUntilVisible(option, 100, scrollable: menu);
+    await Scrollable.ensureVisible(tester.element(option), alignment: 0.5);
     await tester.pumpAndSettle();
-    await tester.tap(find.text(label).last);
+    await tester.tap(option);
     await tester.pumpAndSettle();
   }
 
@@ -321,5 +321,29 @@ void main() {
     await tester.pumpAndSettle();
     expect(store.state.widgetColors.backgroundFor('allBabies'), 0xFFABCDEF);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Baby Time previews contrasting Change baby and End colors', (
+    tester,
+  ) async {
+    final store = _AppearanceStore()
+      ..state = RelayState(childNames: ['Ava', 'Noah']);
+    await open(tester, store, _AppearanceWidget());
+    await pickPart(tester, 'Baby Time');
+    final changeBaby = tester.widget<ColoredBox>(
+      find.byKey(const ValueKey('preview-changeBaby')),
+    );
+    final end = tester.widget<ColoredBox>(
+      find.byKey(const ValueKey('preview-end')),
+    );
+    expect(changeBaby.color, const Color(0xFF6450CA));
+    expect(end.color, const Color(0xFFDDEAAD));
+    expect(changeBaby.color, isNot(end.color));
+    await pickPart(tester, 'Change baby');
+    await enterHex(tester, '#112233');
+    await tester.tap(find.text('Save widget colors'));
+    await tester.pumpAndSettle();
+    expect(store.state.widgetColors.backgroundFor('changeBaby'), 0xFF112233);
+    expect(store.state.widgetColors.end, 0xFFDDEAAD);
   });
 }

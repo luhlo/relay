@@ -411,6 +411,36 @@ class RelayWidgetProviderTest {
     }
 
     @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun timeBarCentersTheLabelAndCompleteClockAsOneCompactGroup() {
+        for (scale in listOf(1f, 1.3f)) {
+            RuntimeEnvironment.setFontScale(scale)
+            for (mode in listOf("work", "interrupted", "baby")) {
+                snapshot(mode)
+                for ((width, height) in listOf(110 to 56, 176 to 82, 376 to 82)) {
+                    val root = render(width, height)
+                    val group = root.findViewById<View>(R.id.widget_timer_group)
+                    assertTrue("Label/timer group must be horizontally centered", abs(group.left * 2 + group.width - width) <= 1)
+                    if (width == 376) assertTrue("Short labels should form a compact group", group.width < width - 40)
+                    val clock = root.findViewById<Chronometer>(R.id.widget_clock)
+                    assertTrue(clock.paint.measureText("20:00:00") <= clock.width)
+                    assertFits(root)
+                }
+                RelayWidgetProvider.reportResult(context, source, "Reconnect to save")
+                val root = render(176, 82)
+                val group = root.findViewById<View>(R.id.widget_timer_group)
+                assertTrue(abs(group.left * 2 + group.width - 176) <= 1)
+                assertEquals(Gravity.CENTER, root.findViewById<TextView>(R.id.widget_status).gravity)
+                assertFits(root)
+            }
+            snapshot()
+            RelayWidgetProvider.reportResult(context, source, "Reconnect to save")
+            assertEquals(Gravity.CENTER, render(176, 82).findViewById<TextView>(R.id.widget_error).gravity)
+        }
+        RuntimeEnvironment.setFontScale(1f)
+    }
+
+    @Test
     fun oneTwoAndThreeChildrenFillOneThreeAndFourEqualSections() {
         val ids = listOf(R.id.widget_baby_0, R.id.widget_baby_1, R.id.widget_baby_2)
         for (count in 1..3) {
@@ -474,7 +504,7 @@ class RelayWidgetProviderTest {
         assertEquals(0xFF24232C.toInt(), root.findViewById<TextView>(R.id.widget_clock).currentTextColor)
         snapshot("baby")
         root = render()
-        assertEquals(0xFF112244.toInt(), backgroundColor(root, R.id.widget_change_baby))
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_change_baby))
         assertEquals(0xFFEEEBFC.toInt(), backgroundColor(root, R.id.widget_session_summary))
         pick("PICK_BABY")
         root = render()
@@ -559,7 +589,7 @@ class RelayWidgetProviderTest {
 
     @Test
     fun everyWidgetSurfaceUsesItsOwnBackgroundAndTextOverride() {
-        val roles = listOf("work", "baby", "interruption", "resume", "end", "timer", "allBabies", "navigation", "notice") +
+        val roles = listOf("work", "baby", "interruption", "resume", "end", "timer", "allBabies", "navigation", "notice", "changeBaby") +
             (0..7).map { "child$it" }
         val backgrounds = roles.mapIndexed { index, role -> role to (0xFF000000L or (0x123456 + index * 0x090703).toLong()) }.toMap()
         val foregrounds = roles.mapIndexed { index, role -> role to (0xFF000000L or (0xEFDAC0 - index * 0x030507).toLong()) }.toMap()
@@ -583,7 +613,7 @@ class RelayWidgetProviderTest {
             assertStyle(root, R.id.widget_status, "notice")
             assertStyle(root, R.id.widget_end, "end")
             assertStyle(root, if (mode == "baby") R.id.widget_change_baby else R.id.widget_interruption,
-                if (mode == "baby") "baby" else if (mode == "interrupted") "resume" else "interruption")
+                if (mode == "baby") "changeBaby" else if (mode == "interrupted") "resume" else "interruption")
         }
         snapshot(count = 3)
         pick("PICK_BABY")
@@ -633,7 +663,7 @@ class RelayWidgetProviderTest {
         assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_interruption))
         assertEquals(0xFFDDEAAD.toInt(), backgroundColor(root, R.id.widget_end))
         assertEquals(0xFFEEEBFC.toInt(), backgroundColor(root, R.id.widget_session_summary))
-        assertEquals(2, prefs.getInt("paletteVersion", 0))
+        assertEquals(3, prefs.getInt("paletteVersion", 0))
         snapshot("interrupted", colors = legacy)
         root = render()
         assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_interruption))
@@ -679,5 +709,45 @@ class RelayWidgetProviderTest {
         root = render()
         assertEquals(0xFF2762B2.toInt(), backgroundColor(root, R.id.widget_interruption))
         assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_end))
+    }
+
+    @Test
+    fun versionTwoUpgradesOnlyTheFormerDefaultYellowAndAddsContrastingChangeBaby() {
+        val prefs = context.getSharedPreferences("relay.home_widget.v1", Context.MODE_PRIVATE)
+        prefs.edit().putString("context", source).putString("status", "work")
+            .putInt("paletteVersion", 2).putInt("color:interruption", 0xFFF3C879.toInt())
+            .putInt("color:work", 0xFF123456.toInt()).putInt("color:timer", 0xFF345678.toInt())
+            .putInt("text:timer", Color.WHITE).commit()
+        var root = render()
+        assertEquals(0xFFFFCC33.toInt(), backgroundColor(root, R.id.widget_interruption))
+        assertEquals(0xFF345678.toInt(), backgroundColor(root, R.id.widget_session_summary))
+        assertEquals(Color.WHITE, root.findViewById<TextView>(R.id.widget_timer_label).currentTextColor)
+        snapshot(colors = mapOf("version" to 2, "interruption" to 0xFFF3C879,
+            "work" to 0xFF123456, "text" to mapOf("work" to Color.WHITE)))
+        snapshot("work")
+        root = render()
+        assertEquals(0xFFFFCC33.toInt(), backgroundColor(root, R.id.widget_interruption))
+        snapshot("baby")
+        root = render()
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_change_baby))
+        assertEquals(0xFFDDEAAD.toInt(), backgroundColor(root, R.id.widget_end))
+        assertNotEquals(backgroundColor(root, R.id.widget_change_baby), backgroundColor(root, R.id.widget_end))
+        assertEquals(3, prefs.getInt("paletteVersion", 0))
+    }
+
+    @Test
+    fun customYellowAndChangeBabyOverridesRemainIndependent() {
+        snapshot("work", colors = mapOf("version" to 2, "interruption" to 0xFFEEDD22))
+        assertEquals(0xFFEEDD22.toInt(), backgroundColor(render(), R.id.widget_interruption))
+        snapshot("work", colors = mapOf("version" to 3, "interruption" to 0xFFF3C879,
+            "changeBaby" to 0xFF123456, "text" to mapOf("changeBaby" to Color.WHITE)))
+        assertEquals(0xFFF3C879.toInt(), backgroundColor(render(), R.id.widget_interruption))
+        snapshot("baby")
+        val root = render()
+        assertEquals(0xFF123456.toInt(), backgroundColor(root, R.id.widget_change_baby))
+        assertEquals(Color.WHITE, root.findViewById<TextView>(R.id.widget_change_baby).currentTextColor)
+        assertEquals(0xFFDDEAAD.toInt(), backgroundColor(root, R.id.widget_end))
+        snapshot("work", colors = mapOf("work" to 0xFFE49A58, "interruption" to 0xFFF3C879))
+        assertEquals(0xFFF3C879.toInt(), backgroundColor(render(), R.id.widget_interruption))
     }
 }

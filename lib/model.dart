@@ -145,9 +145,10 @@ class WidgetColors {
   const WidgetColors({
     this.work = 0xFF6450CA,
     this.baby = 0xFFDDEAAD,
-    this.interruption = 0xFFF3C879,
+    this.interruption = 0xFFFFCC33,
     this.resume = 0xFF6450CA,
     this.end = 0xFFDDEAAD,
+    this.changeBaby = 0xFF6450CA,
     this.timer = 0xFFEEEBFC,
     this.allBabies = 0xFF6450CA,
     this.navigation = 0xFFEEEBFC,
@@ -162,6 +163,7 @@ class WidgetColors {
     'interruption',
     'resume',
     'end',
+    'changeBaby',
     'timer',
     'allBabies',
     'navigation',
@@ -184,7 +186,7 @@ class WidgetColors {
     'end': 0xFF6450CA,
   };
 
-  final int work, baby, interruption, resume, end;
+  final int work, baby, interruption, resume, end, changeBaby;
   final int timer, allBabies, navigation, notice;
   final Map<int, int> childColors;
   final Map<String, int> textColors;
@@ -203,6 +205,8 @@ class WidgetColors {
         return resume;
       case 'end':
         return end;
+      case 'changeBaby':
+        return changeBaby;
       case 'timer':
         return timer;
       case 'allBabies':
@@ -233,6 +237,7 @@ class WidgetColors {
     int? interruption,
     int? resume,
     int? end,
+    int? changeBaby,
     int? timer,
     int? allBabies,
     int? navigation,
@@ -245,6 +250,7 @@ class WidgetColors {
     interruption: interruption ?? this.interruption,
     resume: resume ?? this.resume,
     end: end ?? this.end,
+    changeBaby: changeBaby ?? this.changeBaby,
     timer: timer ?? this.timer,
     allBabies: allBabies ?? this.allBabies,
     navigation: navigation ?? this.navigation,
@@ -270,6 +276,8 @@ class WidgetColors {
         return copyWith(resume: value);
       case 'end':
         return copyWith(end: value);
+      case 'changeBaby':
+        return copyWith(changeBaby: value);
       case 'timer':
         return copyWith(timer: value);
       case 'allBabies':
@@ -296,7 +304,7 @@ class WidgetColors {
   }
 
   Map<String, dynamic> toJson() => {
-    'version': 2,
+    'version': 3,
     for (final role in backgroundRoles) role: _opaque(backgroundFor(role)),
     'text': {
       for (final entry in textColors.entries)
@@ -325,8 +333,15 @@ class WidgetColors {
     int? validColor(Object? raw) =>
         raw is int && raw >= 0 && raw <= 0xFFFFFFFF ? _opaque(raw) : null;
     const defaults = WidgetColors();
-    int color(String role) =>
-        validColor(value[role]) ?? defaults.backgroundFor(role);
+    int color(String role) {
+      // Version 2 shipped the softer app amber. Upgrade that default without
+      // replacing a deliberately different interruption color.
+      if (version == 2 && role == 'interruption' && value[role] == 0xFFF3C879) {
+        return defaults.interruption;
+      }
+      return validColor(value[role]) ?? defaults.backgroundFor(role);
+    }
+
     final texts = value['text'];
     return WidgetColors(
       work: color('work'),
@@ -334,6 +349,7 @@ class WidgetColors {
       interruption: color('interruption'),
       resume: color('resume'),
       end: color('end'),
+      changeBaby: color('changeBaby'),
       timer: color('timer'),
       allBabies: color('allBabies'),
       navigation: color('navigation'),

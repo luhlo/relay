@@ -18,7 +18,9 @@ void main() {
     expect(colors.resume, colors.work);
     expect(colors.baby, 0xFFDDEAAD);
     expect(colors.end, colors.baby);
-    expect(colors.interruption, 0xFFF3C879);
+    expect(colors.changeBaby, colors.work);
+    expect(colors.changeBaby, isNot(colors.end));
+    expect(colors.interruption, 0xFFFFCC33);
     expect(colors.timer, 0xFFEEEBFC);
     expect(colors.timer, isNot(colors.work));
     expect(colors.foregroundFor('work'), 0xFFFFFFFF);
@@ -86,6 +88,27 @@ void main() {
       expect(restored.resume, legacyDefaults['resume']);
       expect(restored.end, legacyDefaults['end']);
     }
+  });
+
+  test('version 2 upgrades soft yellow while preserving customized parts', () {
+    final old = const WidgetColors().toJson()
+      ..['version'] = 2
+      ..['interruption'] = 0xFFF3C879
+      ..['work'] = 0xFF123456
+      ..remove('changeBaby');
+    final migrated = WidgetColors.fromJson(old);
+    expect(migrated.interruption, 0xFFFFCC33);
+    expect(migrated.work, 0xFF123456);
+    expect(migrated.changeBaby, 0xFF6450CA);
+    old['interruption'] = 0xFF987654;
+    expect(WidgetColors.fromJson(old).interruption, 0xFF987654);
+
+    // Selecting the softer amber in the current editor remains a saved choice.
+    final custom = const WidgetColors().withBackground(
+      'interruption',
+      0xFFF3C879,
+    );
+    expect(WidgetColors.fromJson(custom.toJson()).interruption, 0xFFF3C879);
   });
 
   test('invalid saved colors fall back and valid colors become opaque', () {
