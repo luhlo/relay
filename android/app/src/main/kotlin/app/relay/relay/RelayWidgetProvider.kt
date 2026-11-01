@@ -225,44 +225,41 @@ open class RelayWidgetProvider : AppWidgetProvider() {
             } catch (_: Exception) { listOf("Baby 1") }
             val page = prefs.getInt("pickerPage", -1)
             val choosing = configured && page >= 0
-            val compactPicker = height < 220
             val rv = RemoteViews(context.packageName, R.layout.relay_widget)
             rv.setViewVisibility(R.id.widget_normal, if (choosing) View.GONE else View.VISIBLE)
             rv.setViewVisibility(R.id.widget_picker, if (choosing) View.VISIBLE else View.GONE)
             if (choosing) {
-                rv.setViewVisibility(R.id.widget_picker_compact, if (compactPicker) View.VISIBLE else View.GONE)
-                rv.setViewVisibility(R.id.widget_picker_full, if (compactPicker) View.GONE else View.VISIBLE)
-                rv.setOnClickPendingIntent(R.id.widget_cancel, picker(context, id, PICK_CANCEL))
-                rv.setOnClickPendingIntent(R.id.widget_cancel_compact, picker(context, id, PICK_CANCEL))
-                val choiceCount = if (names.size > 1) names.size + 1 else names.size
-                val index = page % choiceCount
-                if (compactPicker) {
+                val carousel = names.size > 3
+                rv.setViewVisibility(R.id.widget_baby_options, if (carousel) View.GONE else View.VISIBLE)
+                rv.setViewVisibility(R.id.widget_picker_carousel, if (carousel) View.VISIBLE else View.GONE)
+                if (carousel) {
+                    val index = page % (names.size + 1)
                     val selectedName = if (index == names.size) "All babies" else names[index]
                     val selectedIndex = if (index == names.size) -1 else index
                     rv.setTextViewText(R.id.widget_selected_baby, selectedName)
                     rv.setContentDescription(R.id.widget_selected_baby, "Start Baby Time for $selectedName")
                     rv.setOnClickPendingIntent(R.id.widget_selected_baby, track(context, id, "baby", selectedIndex))
-                    rv.setViewVisibility(R.id.widget_previous_baby, if (names.size > 1) View.VISIBLE else View.GONE)
-                    rv.setViewVisibility(R.id.widget_next_baby, if (names.size > 1) View.VISIBLE else View.GONE)
+                    // Double the former 28dp arrows when space allows, while preserving
+                    // a readable central label when the widget is resized very narrow.
+                    val arrowDp = minOf(56, maxOf(24, (width - 48) / 2))
+                    val arrowPx = (arrowDp * context.resources.displayMetrics.density).toInt()
+                    rv.setInt(R.id.widget_previous_baby, "setWidth", arrowPx)
+                    rv.setInt(R.id.widget_next_baby, "setWidth", arrowPx)
                     rv.setOnClickPendingIntent(R.id.widget_previous_baby, picker(context, id, PICK_PREVIOUS))
                     rv.setOnClickPendingIntent(R.id.widget_next_baby, picker(context, id, PICK_NEXT))
                 } else {
-                    val first = (index.coerceAtMost(names.lastIndex) / 4) * 4
-                    val buttonIds = intArrayOf(R.id.widget_baby_0, R.id.widget_baby_1, R.id.widget_baby_2, R.id.widget_baby_3)
-                    buttonIds.forEachIndexed { offset, viewId ->
-                        val child = first + offset
-                        rv.setViewVisibility(viewId, if (child < names.size) View.VISIBLE else View.INVISIBLE)
-                        if (child < names.size) {
-                            rv.setTextViewText(viewId, names[child])
-                            rv.setOnClickPendingIntent(viewId, track(context, id, "baby", child))
+                    val buttonIds = intArrayOf(R.id.widget_baby_0, R.id.widget_baby_1, R.id.widget_baby_2)
+                    buttonIds.forEachIndexed { index, viewId ->
+                        rv.setViewVisibility(viewId, if (index < names.size) View.VISIBLE else View.GONE)
+                        if (index < names.size) {
+                            rv.setTextViewText(viewId, names[index])
+                            rv.setContentDescription(viewId, "Start Baby Time for ${names[index]}")
+                            rv.setOnClickPendingIntent(viewId, track(context, id, "baby", index))
                         }
                     }
-                    rv.setViewVisibility(R.id.widget_baby_row_2, if (names.size > first + 2) View.VISIBLE else View.GONE)
                     rv.setViewVisibility(R.id.widget_all_babies, if (names.size > 1) View.VISIBLE else View.GONE)
+                    rv.setInt(R.id.widget_all_babies, "setBackgroundResource", if (names.size == 2) R.drawable.widget_interruption_button else R.drawable.widget_neutral_button)
                     rv.setOnClickPendingIntent(R.id.widget_all_babies, track(context, id, "baby", -1))
-                    rv.setViewVisibility(R.id.widget_more_babies, if (names.size > 4) View.VISIBLE else View.GONE)
-                    rv.setTextViewText(R.id.widget_more_babies, if (first == 0) "More babies →" else "← Back")
-                    rv.setOnClickPendingIntent(R.id.widget_more_babies, picker(context, id, if (first == 0) PICK_FULL_NEXT else PICK_BABY))
                 }
                 return rv
             }
@@ -274,15 +271,13 @@ open class RelayWidgetProvider : AppWidgetProvider() {
             rv.setContentDescription(R.id.widget_error, message)
             rv.setViewVisibility(R.id.widget_session_summary, if (active) View.VISIBLE else View.GONE)
             rv.setViewVisibility(R.id.widget_start_actions, if (active) View.GONE else View.VISIBLE)
-            rv.setTextViewText(R.id.widget_status, when (status) {
-                "work" -> "Work Time"
-                "baby" -> prefs.getString("subtitle", "").orEmpty().ifBlank { "Baby Time" }
-                "interrupted" -> "Interrupted"
-                else -> "Relay"
+            rv.setViewVisibility(R.id.widget_status, if (message.isNotBlank()) View.VISIBLE else View.GONE)
+            rv.setContentDescription(R.id.widget_status, message)
+            rv.setContentDescription(R.id.widget_session_summary, when (status) {
+                "baby" -> "Baby Time · ${prefs.getString("subtitle", "")}"
+                "interrupted" -> "Interrupted · actual work time paused"
+                else -> "Work Time · actual work time"
             })
-            rv.setViewVisibility(R.id.widget_status, if (width >= 180 || message.isNotBlank()) View.VISIBLE else View.GONE)
-            if (active && message.isNotBlank()) rv.setTextViewText(R.id.widget_status, if (width < 180) "!" else message)
-            rv.setContentDescription(R.id.widget_status, if (message.isNotBlank()) message else if (status == "baby") "Baby Time · ${prefs.getString("subtitle", "")}" else "Open Relay")
             val running = active && prefs.getBoolean("running", false)
             val savedElapsed = prefs.getLong("elapsedSeconds", 0)
             val elapsed = savedElapsed + if (running) max(0L, (System.currentTimeMillis() - prefs.getLong("savedAt", System.currentTimeMillis())) / 1000) else 0

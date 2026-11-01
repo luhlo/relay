@@ -14,6 +14,8 @@ import android.widget.Chronometer
 import android.widget.FrameLayout
 import android.widget.RemoteViews
 import android.widget.TextView
+import android.graphics.drawable.GradientDrawable
+import android.view.Gravity
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -121,7 +123,7 @@ class RelayWidgetProviderTest {
     fun workTimerRunsAndInterruptionClickPreservesSessionGuard() {
         snapshot("work")
         val root = render()
-        assertEquals("Work Time", text(root, R.id.widget_status))
+        assertEquals("Work Time · actual work time", root.findViewById<View>(R.id.widget_session_summary).contentDescription.toString())
         assertEquals(View.VISIBLE, visibility(root, R.id.widget_clock))
         assertEquals(View.GONE, visibility(root, R.id.widget_time_static))
         val elapsed = SystemClock.elapsedRealtime() - root.findViewById<Chronometer>(R.id.widget_clock).base
@@ -137,7 +139,7 @@ class RelayWidgetProviderTest {
     fun interruptedTimerFreezesAndOffersResume() {
         snapshot("interrupted")
         val root = render()
-        assertEquals("Interrupted", text(root, R.id.widget_status))
+        assertEquals("Interrupted · actual work time paused", root.findViewById<View>(R.id.widget_session_summary).contentDescription.toString())
         assertEquals(View.GONE, visibility(root, R.id.widget_clock))
         assertEquals(View.VISIBLE, visibility(root, R.id.widget_time_static))
         assertEquals("00:05:00", text(root, R.id.widget_time_static))
@@ -151,30 +153,39 @@ class RelayWidgetProviderTest {
     fun babyTimeShowsSelectedBabyWithoutInterruptionControl() {
         snapshot("baby")
         val root = render()
-        assertEquals("Child 2", text(root, R.id.widget_status))
+        assertEquals("Baby Time · Child 2", root.findViewById<View>(R.id.widget_session_summary).contentDescription.toString())
         assertEquals(View.VISIBLE, visibility(root, R.id.widget_change_baby))
         assertEquals(View.GONE, visibility(root, R.id.widget_interruption))
         assertEquals(View.VISIBLE, visibility(root, R.id.widget_session_actions))
     }
 
     @Test
-    fun childPickerRendersOneThroughEightChildrenAndAllBabies() {
-        val ids = listOf(R.id.widget_baby_0, R.id.widget_baby_1, R.id.widget_baby_2, R.id.widget_baby_3)
+    fun childPickerShowsDirectNamesForOneToThreeAndCarouselForLargerFamilies() {
+        val ids = listOf(R.id.widget_baby_0, R.id.widget_baby_1, R.id.widget_baby_2)
         for (count in 1..8) {
             snapshot(count = count)
             pick("PICK_BABY")
-            var root = render()
+            val root = render(376, 82)
             assertEquals(View.VISIBLE, visibility(root, R.id.widget_picker))
             assertEquals(View.GONE, visibility(root, R.id.widget_normal))
-            for (index in 0 until minOf(count, 4)) assertEquals("Child ${index + 1}", text(root, ids[index]))
-            assertEquals(if (count > 1) View.VISIBLE else View.GONE, visibility(root, R.id.widget_all_babies))
-            assertEquals("All babies", text(root, R.id.widget_all_babies))
-            assertEquals(if (count > 4) View.VISIBLE else View.GONE, visibility(root, R.id.widget_more_babies))
-            if (count > 4) {
-                pick("PICK_FULL_NEXT")
-                root = render()
-                for (index in 4 until count) assertEquals("Child ${index + 1}", text(root, ids[index - 4]))
-                assertEquals("← Back", text(root, R.id.widget_more_babies))
+            assertFits(root)
+            if (count <= 3) {
+                assertEquals(View.VISIBLE, visibility(root, R.id.widget_baby_options))
+                assertEquals(View.GONE, visibility(root, R.id.widget_picker_carousel))
+                for (index in 0 until count) {
+                    assertEquals("Child ${index + 1}", text(root, ids[index]))
+                    val action = requireNotNull(RelayWidgetProvider.consumeAction(context, click(root, ids[index])))
+                    assertEquals(index, action["babyIndex"])
+                }
+                assertEquals(if (count > 1) View.VISIBLE else View.GONE, visibility(root, R.id.widget_all_babies))
+                if (count > 1) {
+                    assertEquals("All babies", text(root, R.id.widget_all_babies))
+                    val all = requireNotNull(RelayWidgetProvider.consumeAction(context, click(root, R.id.widget_all_babies)))
+                    assertEquals(-1, all["babyIndex"])
+                }
+            } else {
+                assertEquals(View.VISIBLE, visibility(root, R.id.widget_picker_carousel))
+                assertEquals("Child 1", text(root, R.id.widget_selected_baby))
             }
             pick("PICK_CANCEL")
             assertEquals(View.GONE, visibility(render(), R.id.widget_picker))
@@ -185,11 +196,13 @@ class RelayWidgetProviderTest {
     fun eighthChildAndAllBabiesProduceCorrectSelection() {
         snapshot(count = 8)
         pick("PICK_BABY")
-        pick("PICK_FULL_NEXT")
-        val last = requireNotNull(RelayWidgetProvider.consumeAction(context, click(render(), R.id.widget_baby_3)))
+        repeat(7) { pick("PICK_NEXT") }
+        val last = requireNotNull(RelayWidgetProvider.consumeAction(context, click(render(), R.id.widget_selected_baby)))
         assertEquals("baby", last["action"])
         assertEquals(7, last["babyIndex"])
-        val all = requireNotNull(RelayWidgetProvider.consumeAction(context, click(render(), R.id.widget_all_babies)))
+        pick("PICK_NEXT")
+        assertEquals("All babies", text(render(), R.id.widget_selected_baby))
+        val all = requireNotNull(RelayWidgetProvider.consumeAction(context, click(render(), R.id.widget_selected_baby)))
         assertEquals("baby", all["action"])
         assertEquals(-1, all["babyIndex"])
     }
@@ -224,7 +237,7 @@ class RelayWidgetProviderTest {
 
     @Test
     fun minimumOneRowAndExpandedSizesKeepAllControlsInsideWidget() {
-        for ((width, height) in listOf(110 to 56, 140 to 60, 300 to 60, 160 to 250, 350 to 300)) {
+        for ((width, height) in listOf(110 to 56, 140 to 60, 176 to 82, 376 to 82, 300 to 60, 160 to 250, 350 to 300)) {
             for (mode in listOf("idle", "work", "interrupted", "baby")) {
                 snapshot(mode, count = 8)
                 val root = render(width, height)
@@ -244,7 +257,7 @@ class RelayWidgetProviderTest {
 
     @Test
     fun compactCarouselIncludesEveryChildAndAllBabiesWithNoActivityLaunch() {
-        for (count in 1..8) {
+        for (count in 4..8) {
             snapshot(count = count)
             pick("PICK_BABY")
             for (index in 0 until count) {
@@ -294,20 +307,20 @@ class RelayWidgetProviderTest {
         views = method.invoke(RelayWidgetProvider.Companion, context, widgetId) as RemoteViews
         root = apply(views, 300, 60)
         assertFits(root)
-        assertEquals(View.VISIBLE, visibility(root, R.id.widget_status))
+        assertEquals(View.GONE, visibility(root, R.id.widget_status))
     }
 
     @Test
     fun backgroundResultDisplaysErrorsOnlyForTheCurrentAccount() {
         snapshot("work")
         RelayWidgetProvider.reportResult(context, "cloud:someone-else", "Wrong account")
-        assertEquals("Work Time", text(render(), R.id.widget_status))
+        assertEquals(View.GONE, visibility(render(), R.id.widget_status))
         RelayWidgetProvider.reportResult(context, source, "Reconnect to save")
-        assertEquals("Reconnect to save", text(render(), R.id.widget_status))
+        assertEquals("Reconnect to save", render().findViewById<View>(R.id.widget_status).contentDescription)
         assertEquals("!", text(render(140, 60), R.id.widget_status))
         assertEquals(View.VISIBLE, visibility(render(140, 60), R.id.widget_clock))
         RelayWidgetProvider.reportResult(context, source, null)
-        assertEquals("Work Time", text(render(), R.id.widget_status))
+        assertEquals(View.GONE, visibility(render(), R.id.widget_status))
     }
 
     @Test
@@ -327,5 +340,89 @@ class RelayWidgetProviderTest {
             xml.close()
         }
         assertTrue(RelayWidgetProvider::class.java.isAssignableFrom(RelayCompactWidgetProvider::class.java))
+    }
+
+    @Test
+    fun idleHalvesFillTheBarWithoutBordersGapsOrRoundedButtons() {
+        snapshot()
+        for ((width, height) in listOf(110 to 56, 176 to 82, 376 to 82)) {
+            val root = render(width, height)
+            assertEquals(0, root.paddingLeft + root.paddingTop + root.paddingRight + root.paddingBottom)
+            val work = root.findViewById<View>(R.id.widget_work)
+            val baby = root.findViewById<View>(R.id.widget_baby)
+            assertEquals(width / 2, work.width)
+            assertEquals(work.width, baby.width)
+            assertEquals(0, work.left)
+            assertEquals(work.right, baby.left)
+            assertEquals(width, baby.right)
+            assertEquals(height, work.height)
+            assertEquals(height, baby.height)
+            for (view in listOf(work, baby)) {
+                val background = view.background as GradientDrawable
+                assertTrue(background.cornerRadii?.all { it == 0f } ?: true)
+                assertEquals(0f, view.elevation)
+            }
+            assertEquals(0xFF6450CA.toInt(), (work.background as GradientDrawable).color?.defaultColor)
+            assertEquals(0xFFDDEAAD.toInt(), (baby.background as GradientDrawable).color?.defaultColor)
+        }
+    }
+
+    @Test
+    fun activeTimerIsCenteredAboveTwoEqualFullColorActionRegions() {
+        for (mode in listOf("work", "interrupted", "baby")) {
+            snapshot(mode)
+            for ((width, height) in listOf(176 to 82, 376 to 82)) {
+                val root = render(width, height)
+                val timer = root.findViewById<TextView>(if (mode == "interrupted") R.id.widget_time_static else R.id.widget_clock)
+                assertEquals(width, timer.width)
+                assertEquals(Gravity.CENTER, timer.gravity)
+                val first = root.findViewById<View>(if (mode == "baby") R.id.widget_change_baby else R.id.widget_interruption)
+                val end = root.findViewById<View>(R.id.widget_end)
+                assertEquals(first.width, end.width)
+                assertEquals(width / 2, first.width)
+                assertEquals(first.right, end.left)
+                assertEquals(width, end.right)
+                assertEquals(height - 18, first.height)
+                assertEquals(first.height, end.height)
+                assertEquals(View.GONE, visibility(root, R.id.widget_status))
+                assertFits(root)
+            }
+        }
+    }
+
+    @Test
+    fun oneTwoAndThreeChildrenFillOneThreeAndFourEqualSections() {
+        val ids = listOf(R.id.widget_baby_0, R.id.widget_baby_1, R.id.widget_baby_2)
+        for (count in 1..3) {
+            snapshot(count = count)
+            pick("PICK_BABY")
+            for ((width, height) in listOf(176 to 82, 376 to 82)) {
+                val root = render(width, height)
+                val buttons = ids.take(count).map { root.findViewById<View>(it) }.toMutableList()
+                if (count > 1) buttons.add(root.findViewById(R.id.widget_all_babies))
+                assertEquals(0, buttons.first().left)
+                for ((index, button) in buttons.withIndex()) {
+                    assertTrue(abs(button.width - width / buttons.size) <= 1)
+                    assertEquals(height, button.height)
+                    if (index > 0) assertEquals(buttons[index - 1].right, button.left)
+                }
+                assertEquals(width, buttons.last().right)
+                assertFits(root)
+            }
+        }
+    }
+
+    @Test
+    fun carouselArrowsAreDoubleWidthOnBothActualPhoneWidgetSizes() {
+        snapshot(count = 4)
+        pick("PICK_BABY")
+        for ((width, height) in listOf(176 to 82, 376 to 82)) {
+            val root = render(width, height)
+            assertEquals(56, root.findViewById<View>(R.id.widget_previous_baby).width)
+            assertEquals(56, root.findViewById<View>(R.id.widget_next_baby).width)
+            assertEquals(width - 112, root.findViewById<View>(R.id.widget_selected_baby).width)
+            assertFits(root)
+        }
+        assertFits(render(110, 56))
     }
 }

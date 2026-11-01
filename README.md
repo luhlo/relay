@@ -25,9 +25,11 @@ saved children and **All babies**; Work Time shows **Interruption / Resume**.
 The timer pauses during interruptions and survives returning to the home screen.
 Use **End** to finish the current session.
 
-Tracking actions save in the background without opening Relay. A paused work
-timer offers Resume. In the smallest widget, use the arrows to choose a child
-or All babies, then tap that choice to start Baby Time.
+Tracking actions save in the background without opening Relay. The flat bar
+uses equal colored sections, with the timer centered above End and Interruption
+or Resume. Baby Time shows one child's name alone; two or three children share
+equal sections with All babies. For four or more children, use the wider arrows
+to choose a child or All babies, then tap that choice to start Baby Time.
 Signed-in tracking needs a connection; local tracking works offline. Cloud changes from another device appear
 after refreshing Relay; the widget shows the most recently loaded device state.
 The browser-installed PWA does not include the native Android widget.
