@@ -1,0 +1,2 @@
+# Preserve editable PDF artwork as binary source files.
+assets/branding/*.pdf binary

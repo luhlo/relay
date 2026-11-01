@@ -9,7 +9,7 @@
     <application
         android:label="Relay"
         android:name="${applicationName}"
-        android:icon="@drawable/ic_launcher">
+        android:icon="@mipmap/ic_launcher">
         <service android:name="androidx.work.impl.foreground.SystemForegroundService"
             tools:node="remove"/>
         <activity

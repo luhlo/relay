@@ -52,3 +52,7 @@ In Settings, enable **Check-in notifications** and **Allow precise timer alerts*
 If exact alarms are not allowed, Android may defer alerts; stored stop deadlines
 still bound recorded time when the job or app next runs. Cloud tracking and
 guard saves require a connection, as with other cloud writes.
+
+## Branding
+
+App and PWA icons use the supplied vector master in `assets/branding/relay-logo.pdf`, whose purple is `#5626FC`. The feature graphic uses the separately supplied rounded tile in `assets/branding/relay-logo-rounded.pdf`, whose purple is `#5429F3`. Both source PDFs are preserved unchanged.
