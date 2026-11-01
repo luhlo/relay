@@ -33,3 +33,22 @@ to choose a child or All babies, then tap that choice to start Baby Time.
 Signed-in tracking needs a connection; local tracking works offline. Cloud changes from another device appear
 after refreshing Relay; the widget shows the most recently loaded device state.
 The browser-installed PWA does not include the native Android widget.
+
+### Widget appearance and timer check-ins
+
+Open the account menu and choose **Widget appearance** to change Work Time,
+Baby Time, Interruption, Resume, and End colors, or restore the app defaults.
+The interruption stopwatch runs separately while actual work time stays paused.
+Signed-in Settings shows the account's email address.
+
+Relay checks in every three hours for work, interruptions, and childcare.
+**Yes, keep going** starts the next three-hour interval; **Stop** ends tracking.
+An unanswered check-in stops tracking after 15 minutes. A twelve-hour
+unconfirmed limit covers missed/deferred checks, and no session can exceed
+twenty hours, including interruptions. Late jobs save the original stop deadline
+and notify the user why the timer stopped.
+
+In Settings, enable **Check-in notifications** and **Allow precise timer alerts**.
+If exact alarms are not allowed, Android may defer alerts; stored stop deadlines
+still bound recorded time when the job or app next runs. Cloud tracking and
+guard saves require a connection, as with other cloud writes.

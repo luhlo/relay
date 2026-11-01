@@ -9,6 +9,7 @@ import 'cloud.dart';
 import 'home_widget.dart';
 import 'model.dart';
 import 'storage.dart';
+import 'timer_guard.dart';
 
 const _backgroundChannel = MethodChannel('app.relay.relay/widget_background');
 const _operationTimeout = Duration(seconds: 20);
@@ -47,11 +48,31 @@ Future<void> runWidgetBackground({
 
     loaded = await store.load().timeout(_operationTimeout);
     if (loaded.lastWidgetRequestId != requestId) {
-      applyWidgetAction(loaded, job, context, DateTime.now());
-      loaded.lastWidgetRequestId = requestId;
-      saveStarted = true;
-      await store.save(loaded).timeout(_operationTimeout);
-      saveConfirmed = true;
+      final kind = job['action'];
+      bool changed;
+      if (kind == 'guard' || kind == 'confirmTimer' || kind == 'stopTimer') {
+        changed = updateTimerGuard(
+          loaded,
+          DateTime.now(),
+          action: kind as String,
+          expectedSessionStart: job['sessionStart'] as String?,
+        ).changed;
+      } else {
+        final guarded = updateTimerGuard(loaded, DateTime.now());
+        if (!(guarded.changed &&
+            loaded.active == null &&
+            kind != 'work' &&
+            kind != 'baby')) {
+          applyWidgetAction(loaded, job, context, DateTime.now());
+        }
+        changed = true;
+      }
+      if (changed) {
+        loaded.lastWidgetRequestId = requestId;
+        saveStarted = true;
+        await store.save(loaded).timeout(_operationTimeout);
+        saveConfirmed = true;
+      }
     }
 
     // A successful save is final. Notification permission/scheduling problems

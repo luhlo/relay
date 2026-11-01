@@ -28,8 +28,16 @@ void main() {
       start.add(const Duration(minutes: 15)),
     );
     expect(snapshot['status'], 'interrupted');
-    expect(snapshot['running'], isFalse);
-    expect(snapshot['elapsedSeconds'], 600);
+    expect(snapshot['running'], isTrue);
+    expect(snapshot['elapsedSeconds'], 300);
+    expect(snapshot['workSeconds'], 600);
+    final later = widgetSnapshot(
+      state,
+      'local',
+      start.add(const Duration(minutes: 16)),
+    );
+    expect(later['elapsedSeconds'], 360);
+    expect(later['workSeconds'], 600);
     final resumedAt = start.add(const Duration(minutes: 20));
     applyWidgetAction(
       state,
@@ -37,11 +45,31 @@ void main() {
       'local',
       resumedAt,
     );
+    final resumed = widgetSnapshot(
+      state,
+      'local',
+      resumedAt.add(const Duration(minutes: 1)),
+    );
+    expect(resumed['status'], 'work');
+    expect(resumed['elapsedSeconds'], 660);
     final end = start.add(const Duration(minutes: 30));
     applyWidgetAction(state, action(state, 'end', end), 'local', end);
     expect(state.actualSeconds(start, end), 1200);
     expect(state.lostSeconds(start, end), 600);
     expect(widgetSnapshot(state, 'local', end)['status'], 'idle');
+  });
+
+  test('widget snapshots carry saved colors and app-matching defaults', () {
+    final state = RelayState();
+    final defaults = widgetSnapshot(state, 'local', start)['colors'] as Map;
+    expect(defaults['baby'], 0xFFDDEAAD);
+    expect(defaults['interruption'], 0xFFF3C879);
+    expect(defaults['resume'], isNot(defaults['interruption']));
+    state.widgetColors = state.widgetColors.copyWith(baby: 0xFF336655);
+    expect(
+      (widgetSnapshot(state, 'local', start)['colors'] as Map)['baby'],
+      0xFF336655,
+    );
   });
 
   test('baby choices use configured children and all babies', () {

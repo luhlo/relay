@@ -17,6 +17,50 @@ class MemoryStore extends RelayStore {
 }
 
 void main() {
+  testWidgets('a due check-in can be confirmed inside the app', (tester) async {
+    final store = MemoryStore();
+    store.state.start(
+      ShiftKind.focus,
+      DateTime.now().subtract(const Duration(hours: 3, minutes: 1)),
+    );
+    await tester.pumpWidget(MaterialApp(home: RelayHome(store: store)));
+    await tester.pumpAndSettle();
+    expect(find.text('Are you still working?'), findsOneWidget);
+    await tester.ensureVisible(find.text('Yes, keep going'));
+    await tester.tap(find.text('Yes, keep going'));
+    await tester.pumpAndSettle();
+    expect(store.state.active, isNotNull);
+    expect(store.state.active!.firstUnansweredCheckIn, isNull);
+    expect(store.state.active!.lastConfirmedAt, isNotNull);
+    expect(find.text('Are you still working?'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'opening an expired timer records and explains the 20-hour stop',
+    (tester) async {
+      final store = MemoryStore();
+      final now = DateTime.now();
+      final start = now.subtract(const Duration(hours: 21));
+      store.state.start(ShiftKind.focus, start);
+      store.state.active!.lastConfirmedAt = now.subtract(
+        const Duration(hours: 1),
+      );
+      await tester.pumpWidget(MaterialApp(home: RelayHome(store: store)));
+      await tester.pumpAndSettle();
+      expect(store.state.active, isNull);
+      expect(
+        store.state.sessions.last.end,
+        start.add(const Duration(hours: 20)),
+      );
+      expect(
+        find.text('Timer stopped after the 20-hour time limit.'),
+        findsOneWidget,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('phone dashboard keeps both shift choices above the fold', (
     tester,
   ) async {

@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'model.dart';
+import 'timer_guard.dart';
 
 /// Foreground snapshot bridge. Widget actions are saved by a headless engine.
 class RelayHomeWidget {
@@ -10,9 +13,21 @@ class RelayHomeWidget {
 
   static final instance = RelayHomeWidget();
   final MethodChannel _channel;
+  final _updates = StreamController<void>.broadcast();
+  bool _listening = false;
 
   bool get supported =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  Stream<void> get updates {
+    if (supported && !_listening) {
+      _listening = true;
+      _channel.setMethodCallHandler((call) async {
+        if (call.method == 'stateChanged') _updates.add(null);
+      });
+    }
+    return _updates.stream;
+  }
 
   Future<String?> currentContext() async {
     if (!supported) return null;
@@ -40,9 +55,20 @@ Map<String, dynamic> widgetSnapshot(
   final active = state.active;
   final interrupted = active?.interruption != null;
   final baby = active?.baby;
+  final interruptionSeconds = interrupted
+      ? now
+            .difference(active!.interruption!.start)
+            .inSeconds
+            .clamp(0, 0x7FFFFFFF)
+      : 0;
   return {
     'context': context,
     'requestId': state.lastWidgetRequestId,
+    'colors': state.widgetColors.toJson(),
+    'guard': timerGuardSnapshot(state, now),
+    'message': active == null && state.sessions.isNotEmpty
+        ? state.sessions.last.autoStopReason
+        : null,
     'status': active == null
         ? 'idle'
         : active.kind == ShiftKind.point
@@ -51,8 +77,11 @@ Map<String, dynamic> widgetSnapshot(
         ? 'interrupted'
         : 'work',
     'childNames': state.childNames,
-    'elapsedSeconds': state.sessionSeconds(now),
-    'running': active != null && !interrupted,
+    'elapsedSeconds': interrupted
+        ? interruptionSeconds
+        : state.sessionSeconds(now),
+    'workSeconds': state.sessionSeconds(now),
+    'running': active != null,
     'sessionStart': active?.start.toUtc().toIso8601String(),
     'subtitle': active == null
         ? 'Choose your time'
@@ -63,7 +92,7 @@ Map<String, dynamic> widgetSnapshot(
               ? 'All babies'
               : state.babyName(baby)
         : interrupted
-        ? 'Work time paused'
+        ? 'Interruption time'
         : 'Uninterrupted work',
   };
 }

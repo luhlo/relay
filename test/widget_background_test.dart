@@ -82,7 +82,7 @@ void main() {
       await run();
       expect(store.state.active?.interruption, isNotNull);
       expect(completions.last['success'], isTrue);
-      expect((completions.last['snapshot'] as Map)['running'], isFalse);
+      expect((completions.last['snapshot'] as Map)['running'], isTrue);
 
       job = action('end', 'end-1');
       await run();

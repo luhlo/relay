@@ -1,6 +1,7 @@
 package app.relay.relay
 
 import android.content.Context
+import android.content.Intent
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import io.flutter.FlutterInjector
@@ -75,6 +76,13 @@ class RelayWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
                     else (completion?.get("error") as? String)
                         ?: "Save unconfirmed. Open Relay to refresh."
                 RelayWidgetProvider.reportResult(applicationContext, source, error)
+                if (completion?.get("success") == true) {
+                    applicationContext.sendBroadcast(Intent("app.relay.relay.widget.STATE_CHANGED")
+                        .setPackage(applicationContext.packageName))
+                }
+                if (action["action"] == "guard" && error != null) {
+                    RelayTimerGuard.retryAfterFailure(applicationContext, source)
+                }
             }
         } catch (cancelled: CancellationException) {
             // WorkManager may restart the same request; Dart's request ID guard makes it idempotent.
@@ -84,6 +92,7 @@ class RelayWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
                 RelayWidgetProvider.reportResult(
                     applicationContext, source, "Could not save. Open Relay to refresh.",
                 )
+                if (action["action"] == "guard") RelayTimerGuard.retryAfterFailure(applicationContext, source)
             }
         } finally {
             withContext(NonCancellable + Dispatchers.Main.immediate) {

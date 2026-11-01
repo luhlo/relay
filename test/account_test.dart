@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:relay/account.dart';
 import 'package:relay/model.dart';
 import 'package:relay/storage.dart';
+import 'package:relay/widget_appearance.dart';
 
 class SettingsStore extends RelayStore {
   RelayState state = RelayState();
@@ -17,6 +18,21 @@ class SettingsStore extends RelayStore {
 }
 
 void main() {
+  testWidgets('signed-in email is labelled and read-only', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(body: SignedInAccountEmail(email: 'parent@example.com')),
+      ),
+    );
+    expect(find.text('Signed in as'), findsOneWidget);
+    expect(find.byType(SelectableText), findsOneWidget);
+    expect(
+      tester.widget<SelectableText>(find.byType(SelectableText)).data,
+      'parent@example.com',
+    );
+    expect(find.byType(TextField), findsNothing);
+  });
+
   testWidgets('sign-in offers Google and email choices on a phone', (
     tester,
   ) async {
@@ -95,4 +111,38 @@ void main() {
     expect(personalTimeAgreement(3), contains('3 hours of personal time'));
     expect(personalTimeAgreement(3), contains('time bank'));
   });
+
+  testWidgets(
+    'appearance is available without discarding unsaved child names',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final store = SettingsStore();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LocalAccountSettings(
+            store: store,
+            initialChildNames: store.state.childNames,
+            initialPersonalTimeEnabled: false,
+            initialDailyPersonalHours: 3,
+            onSignIn: () {},
+          ),
+        ),
+      );
+      await tester.enterText(find.byType(TextField).first, 'Unsaved name');
+      await tester.ensureVisible(find.text('Widget appearance'));
+      await tester.tap(find.text('Widget appearance'));
+      await tester.pumpAndSettle();
+      expect(find.byType(WidgetAppearance), findsOneWidget);
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(find.byType(TextField).first).controller!.text,
+        'Unsaved name',
+      );
+      expect(store.state.childNames.first, 'Baby 1');
+    },
+  );
 }

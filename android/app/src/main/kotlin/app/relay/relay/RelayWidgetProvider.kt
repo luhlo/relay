@@ -7,6 +7,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.graphics.Color
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.View
@@ -74,6 +75,48 @@ open class RelayWidgetProvider : AppWidgetProvider() {
         private const val LAUNCH_ACTION = "app.relay.relay.widget.TRACK"
         private fun preferences(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
+        private val defaultColors = mapOf(
+            "work" to 0xFF6450CA.toInt(),
+            "baby" to 0xFFDDEAAD.toInt(),
+            "interruption" to 0xFFF3C879.toInt(),
+            "resume" to 0xFF2762B2.toInt(),
+            "end" to 0xFF6450CA.toInt(),
+        )
+
+        private fun opaqueColor(value: Any?, fallback: Int): Int {
+            val number = (value as? Number)?.toLong() ?: return fallback
+            if (number < Int.MIN_VALUE.toLong() || number > 0xFFFFFFFFL) return fallback
+            return ((number and 0x00FFFFFFL) or 0xFF000000L).toInt()
+        }
+
+        /** Choose Relay ink or white according to the higher WCAG contrast ratio. */
+        private fun foregroundColor(background: Int): Int {
+            fun linear(channel: Int): Double {
+                val srgb = channel / 255.0
+                return if (srgb <= 0.04045) srgb / 12.92 else Math.pow((srgb + 0.055) / 1.055, 2.4)
+            }
+            val luminance = 0.2126 * linear(Color.red(background)) +
+                0.7152 * linear(Color.green(background)) + 0.0722 * linear(Color.blue(background))
+            val ink = 0xFF24232C.toInt()
+            val inkLuminance = 0.2126 * linear(Color.red(ink)) +
+                0.7152 * linear(Color.green(ink)) + 0.0722 * linear(Color.blue(ink))
+            val inkContrast = (maxOf(luminance, inkLuminance) + 0.05) /
+                (minOf(luminance, inkLuminance) + 0.05)
+            val whiteContrast = 1.05 / (luminance + 0.05)
+            return if (inkContrast >= whiteContrast) ink else Color.WHITE
+        }
+
+        private fun styleButton(views: RemoteViews, id: Int, color: Int) {
+            views.setInt(id, "setBackgroundColor", color)
+            views.setTextColor(id, foregroundColor(color))
+        }
+
+        private fun paleColor(color: Int): Int = Color.rgb(
+            (Color.red(color) * 0.2 + 255 * 0.8).toInt(),
+            (Color.green(color) * 0.2 + 255 * 0.8).toInt(),
+            (Color.blue(color) * 0.2 + 255 * 0.8).toInt(),
+        )
+
         @JvmStatic
         fun updateSnapshot(context: Context, snapshot: Map<String, Any?>) {
             val source = snapshot["context"] as? String ?: return
@@ -84,6 +127,13 @@ open class RelayWidgetProvider : AppWidgetProvider() {
             val status = (snapshot["status"] as? String)?.takeIf { it in setOf("idle", "work", "baby", "interrupted") } ?: "idle"
             val prefs = preferences(context)
             val edit = prefs.edit()
+            val suppliedColors = snapshot["colors"] as? Map<*, *>
+            val sameSource = prefs.getString("context", null) == source
+            for ((name, fallback) in defaultColors) {
+                val previous = if (sameSource) prefs.getInt("color:$name", fallback) else fallback
+                val color = if (suppliedColors == null) previous else opaqueColor(suppliedColors[name], fallback)
+                edit.putInt("color:$name", color)
+            }
             // Old launcher click capabilities must not survive an account/snapshot change.
             for (key in prefs.all.keys) if (key.startsWith("token:")) edit.remove(key)
             edit.putString("context", source)
@@ -98,6 +148,7 @@ open class RelayWidgetProvider : AppWidgetProvider() {
                 .putInt("pickerPage", -1)
                 .commit()
             refreshAll(context)
+            RelayTimerGuard.sync(context, snapshot)
         }
 
         @JvmStatic
@@ -118,6 +169,7 @@ open class RelayWidgetProvider : AppWidgetProvider() {
 
         @JvmStatic
         fun clear(context: Context) {
+            RelayTimerGuard.clear(context)
             preferences(context).edit().clear().commit()
             refreshAll(context)
         }
@@ -225,7 +277,34 @@ open class RelayWidgetProvider : AppWidgetProvider() {
             } catch (_: Exception) { listOf("Baby 1") }
             val page = prefs.getInt("pickerPage", -1)
             val choosing = configured && page >= 0
+            val colors = defaultColors.mapValues { (name, fallback) -> prefs.getInt("color:$name", fallback) }
+            val workColor = colors.getValue("work")
+            val babyColor = colors.getValue("baby")
+            val interruptionColor = colors.getValue("interruption")
+            val resumeColor = colors.getValue("resume")
+            val endColor = colors.getValue("end")
             val rv = RemoteViews(context.packageName, R.layout.relay_widget)
+            styleButton(rv, R.id.widget_work, workColor)
+            styleButton(rv, R.id.widget_baby, babyColor)
+            styleButton(rv, R.id.widget_end, endColor)
+            styleButton(rv, R.id.widget_change_baby, babyColor)
+            styleButton(rv, R.id.widget_interruption, if (status == "interrupted") resumeColor else interruptionColor)
+            styleButton(rv, R.id.widget_baby_0, babyColor)
+            styleButton(rv, R.id.widget_baby_1, workColor)
+            styleButton(rv, R.id.widget_baby_2, interruptionColor)
+            styleButton(rv, R.id.widget_all_babies, if (names.size == 2) interruptionColor else paleColor(workColor))
+            styleButton(rv, R.id.widget_selected_baby, babyColor)
+            styleButton(rv, R.id.widget_previous_baby, workColor)
+            styleButton(rv, R.id.widget_next_baby, workColor)
+            val timerColor = when (status) {
+                "baby" -> babyColor
+                "interrupted" -> interruptionColor
+                else -> workColor
+            }
+            rv.setInt(R.id.widget_session_summary, "setBackgroundColor", timerColor)
+            rv.setTextColor(R.id.widget_clock, foregroundColor(timerColor))
+            rv.setTextColor(R.id.widget_time_static, foregroundColor(timerColor))
+            rv.setTextColor(R.id.widget_status, foregroundColor(timerColor))
             rv.setViewVisibility(R.id.widget_normal, if (choosing) View.GONE else View.VISIBLE)
             rv.setViewVisibility(R.id.widget_picker, if (choosing) View.VISIBLE else View.GONE)
             if (choosing) {
@@ -258,7 +337,6 @@ open class RelayWidgetProvider : AppWidgetProvider() {
                         }
                     }
                     rv.setViewVisibility(R.id.widget_all_babies, if (names.size > 1) View.VISIBLE else View.GONE)
-                    rv.setInt(R.id.widget_all_babies, "setBackgroundResource", if (names.size == 2) R.drawable.widget_interruption_button else R.drawable.widget_neutral_button)
                     rv.setOnClickPendingIntent(R.id.widget_all_babies, track(context, id, "baby", -1))
                 }
                 return rv
@@ -275,7 +353,7 @@ open class RelayWidgetProvider : AppWidgetProvider() {
             rv.setContentDescription(R.id.widget_status, message)
             rv.setContentDescription(R.id.widget_session_summary, when (status) {
                 "baby" -> "Baby Time · ${prefs.getString("subtitle", "")}"
-                "interrupted" -> "Interrupted · actual work time paused"
+                "interrupted" -> "Interruption time"
                 else -> "Work Time · actual work time"
             })
             val running = active && prefs.getBoolean("running", false)

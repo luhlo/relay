@@ -15,6 +15,8 @@ import android.widget.FrameLayout
 import android.widget.RemoteViews
 import android.widget.TextView
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.ColorDrawable
+import android.graphics.Color
 import android.view.Gravity
 import org.junit.Assert.*
 import org.junit.Before
@@ -40,16 +42,18 @@ class RelayWidgetProviderTest {
         context.getSharedPreferences("relay.home_widget.v1", Context.MODE_PRIVATE).edit().clear().commit()
     }
 
-    private fun snapshot(status: String = "idle", count: Int = 2) {
-        RelayWidgetProvider.updateSnapshot(context, mapOf(
-            "context" to source,
+    private fun snapshot(status: String = "idle", count: Int = 2, colors: Map<String, Any?>? = null, sourceId: String = source, elapsedSeconds: Int = 300) {
+        val state = mutableMapOf<String, Any?>(
+            "context" to sourceId,
             "status" to status,
             "childNames" to List(count) { "Child ${it + 1}" },
-            "elapsedSeconds" to 300,
-            "running" to (status == "work" || status == "baby"),
+            "elapsedSeconds" to elapsedSeconds,
+            "running" to (status != "idle"),
             "sessionStart" to if (status == "idle") null else started,
-            "subtitle" to if (status == "baby") "Child 2" else "Actual work time",
-        ))
+            "subtitle" to if (status == "baby") "Child 2" else if (status == "interrupted") "Interruption time" else "Actual work time",
+        )
+        if (colors != null) state["colors"] = colors
+        RelayWidgetProvider.updateSnapshot(context, state)
     }
 
     private fun render(width: Int = 350, height: Int = 300): View {
@@ -77,6 +81,12 @@ class RelayWidgetProviderTest {
                 assertFits(child)
             }
         }
+    }
+
+    private fun backgroundColor(root: View, id: Int): Int = when (val background = root.findViewById<View>(id).background) {
+        is ColorDrawable -> background.color
+        is GradientDrawable -> requireNotNull(background.color).defaultColor
+        else -> error("Expected a flat background")
     }
 
     private fun text(root: View, id: Int) = root.findViewById<TextView>(id).text.toString()
@@ -136,14 +146,20 @@ class RelayWidgetProviderTest {
     }
 
     @Test
-    fun interruptedTimerFreezesAndOffersResume() {
-        snapshot("interrupted")
+    fun interruptionStopwatchRunsAndResumeHasADifferentColor() {
+        snapshot("interrupted", elapsedSeconds = 35)
         val root = render()
-        assertEquals("Interrupted · actual work time paused", root.findViewById<View>(R.id.widget_session_summary).contentDescription.toString())
-        assertEquals(View.GONE, visibility(root, R.id.widget_clock))
-        assertEquals(View.VISIBLE, visibility(root, R.id.widget_time_static))
-        assertEquals("00:05:00", text(root, R.id.widget_time_static))
+        assertEquals("Interruption time", root.findViewById<View>(R.id.widget_session_summary).contentDescription.toString())
+        assertEquals(View.VISIBLE, visibility(root, R.id.widget_clock))
+        assertEquals(View.GONE, visibility(root, R.id.widget_time_static))
+        val clock = root.findViewById<Chronometer>(R.id.widget_clock)
+        assertTrue(abs(SystemClock.elapsedRealtime() - clock.base - 35000) < 2000)
+        SystemClock.sleep(2000)
+        assertTrue(abs(SystemClock.elapsedRealtime() - clock.base - 37000) < 2000)
         assertEquals("Resume", text(root, R.id.widget_interruption))
+        assertEquals(0xFFF3C879.toInt(), backgroundColor(root, R.id.widget_session_summary))
+        assertEquals(0xFF2762B2.toInt(), backgroundColor(root, R.id.widget_interruption))
+        assertNotEquals(backgroundColor(root, R.id.widget_session_summary), backgroundColor(root, R.id.widget_interruption))
         val action = requireNotNull(RelayWidgetProvider.consumeAction(context, click(root, R.id.widget_end)))
         assertEquals("end", action["action"])
         assertEquals("interrupted", action["expectedStatus"])
@@ -358,12 +374,13 @@ class RelayWidgetProviderTest {
             assertEquals(height, work.height)
             assertEquals(height, baby.height)
             for (view in listOf(work, baby)) {
-                val background = view.background as GradientDrawable
-                assertTrue(background.cornerRadii?.all { it == 0f } ?: true)
+                val background = view.background
+                if (background is GradientDrawable) assertTrue(background.cornerRadii?.all { it == 0f } ?: true)
+                else assertTrue(background is ColorDrawable)
                 assertEquals(0f, view.elevation)
             }
-            assertEquals(0xFF6450CA.toInt(), (work.background as GradientDrawable).color?.defaultColor)
-            assertEquals(0xFFDDEAAD.toInt(), (baby.background as GradientDrawable).color?.defaultColor)
+            assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_work))
+            assertEquals(0xFFDDEAAD.toInt(), backgroundColor(root, R.id.widget_baby))
         }
     }
 
@@ -373,7 +390,7 @@ class RelayWidgetProviderTest {
             snapshot(mode)
             for ((width, height) in listOf(176 to 82, 376 to 82)) {
                 val root = render(width, height)
-                val timer = root.findViewById<TextView>(if (mode == "interrupted") R.id.widget_time_static else R.id.widget_clock)
+                val timer = root.findViewById<TextView>(R.id.widget_clock)
                 assertEquals(width, timer.width)
                 assertEquals(Gravity.CENTER, timer.gravity)
                 val first = root.findViewById<View>(if (mode == "baby") R.id.widget_change_baby else R.id.widget_interruption)
@@ -424,5 +441,73 @@ class RelayWidgetProviderTest {
             assertFits(root)
         }
         assertFits(render(110, 56))
+    }
+
+    @Test
+    fun customColorsPersistAcrossSnapshotsAndChooseReadableText() {
+        val colors = mapOf<String, Any?>(
+            "work" to 0xFFFFEE00,
+            "baby" to 0xFF112244,
+            "interruption" to 0xFF005500,
+            "resume" to 0xFFFFEEDD,
+            "end" to 0xFF000000,
+        )
+        snapshot(colors = colors)
+        var root = render()
+        assertEquals(0xFFFFEE00.toInt(), backgroundColor(root, R.id.widget_work))
+        assertEquals(0xFF24232C.toInt(), root.findViewById<TextView>(R.id.widget_work).currentTextColor)
+        assertEquals(0xFF112244.toInt(), backgroundColor(root, R.id.widget_baby))
+        assertEquals(Color.WHITE, root.findViewById<TextView>(R.id.widget_baby).currentTextColor)
+        snapshot("work") // Legacy/incomplete snapshots must not erase a saved palette.
+        root = render()
+        assertEquals(0xFF005500.toInt(), backgroundColor(root, R.id.widget_interruption))
+        assertEquals(0xFF000000.toInt(), backgroundColor(root, R.id.widget_end))
+        assertEquals(Color.WHITE, root.findViewById<TextView>(R.id.widget_end).currentTextColor)
+        snapshot("interrupted")
+        root = render()
+        assertEquals(0xFFFFEEDD.toInt(), backgroundColor(root, R.id.widget_interruption))
+        assertEquals(0xFF24232C.toInt(), root.findViewById<TextView>(R.id.widget_interruption).currentTextColor)
+        assertEquals(0xFF005500.toInt(), backgroundColor(root, R.id.widget_session_summary))
+        assertEquals(Color.WHITE, root.findViewById<TextView>(R.id.widget_clock).currentTextColor)
+        snapshot("baby")
+        root = render()
+        assertEquals(0xFF112244.toInt(), backgroundColor(root, R.id.widget_change_baby))
+        assertEquals(0xFF112244.toInt(), backgroundColor(root, R.id.widget_session_summary))
+        pick("PICK_BABY")
+        root = render()
+        assertEquals(0xFF112244.toInt(), backgroundColor(root, R.id.widget_baby_0))
+        assertEquals(0xFFFFEE00.toInt(), backgroundColor(root, R.id.widget_baby_1))
+        assertEquals(0xFF005500.toInt(), backgroundColor(root, R.id.widget_all_babies))
+        snapshot(sourceId = "cloud:different-parent")
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(render(), R.id.widget_work))
+    }
+
+    @Test
+    fun nativePaletteNormalizesOpacityAndRejectsInvalidColors() {
+        snapshot(colors = mapOf(
+            "work" to 0x00112233,
+            "baby" to "invalid",
+            "interruption" to -1,
+            "resume" to 0xFF000000,
+            "end" to 0x1FFFFFFFF,
+        ))
+        var root = render()
+        assertEquals(0xFF112233.toInt(), backgroundColor(root, R.id.widget_work))
+        assertEquals(0xFFDDEAAD.toInt(), backgroundColor(root, R.id.widget_baby))
+        snapshot("work")
+        root = render()
+        assertEquals(Color.WHITE, backgroundColor(root, R.id.widget_interruption))
+        assertEquals(0xFF24232C.toInt(), root.findViewById<TextView>(R.id.widget_interruption).currentTextColor)
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_end))
+        RelayWidgetProvider.clear(context)
+        snapshot()
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(render(), R.id.widget_work))
+    }
+
+    @Test
+    fun orangeSettingsPaletteUsesInkForReadableLabels() {
+        snapshot(colors = mapOf("work" to 0xFFE49A58))
+        val root = render()
+        assertEquals(0xFF24232C.toInt(), root.findViewById<TextView>(R.id.widget_work).currentTextColor)
     }
 }

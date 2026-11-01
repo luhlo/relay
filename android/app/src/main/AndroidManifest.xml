@@ -35,6 +35,14 @@
                 <data android:scheme="app.relay.relay" android:host="login-callback"/>
             </intent-filter>
         </activity>
+        <receiver android:name=".RelayTimerGuardReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
         <receiver android:name=".RelayWidgetActionReceiver" android:exported="false" />
         <receiver android:name=".RelayWidgetProvider" android:exported="false"
             android:label="Relay 4 × 1">

@@ -16,6 +16,7 @@ import 'account.dart';
 import 'cloud.dart';
 import 'home_widget.dart';
 import 'widget_background.dart';
+import 'timer_guard.dart';
 
 import 'package:supabase_flutter/supabase_flutter.dart' hide Session;
 
@@ -103,6 +104,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   String get widgetContext =>
       store is CloudStore ? 'cloud:${(store as CloudStore).userId}' : 'local';
   bool refreshWhenIdle = false;
+  StreamSubscription<void>? widgetUpdates;
   RelayState data = RelayState();
   bool loading = true, busy = false, loadFailed = false;
   String? error;
@@ -115,9 +117,32 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (!widget.readOnly) {
+      widgetUpdates = homeWidget.updates.listen((_) {
+        if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+        if (busy || loading) {
+          refreshWhenIdle = true;
+        } else {
+          load();
+        }
+      });
+    }
     load();
     timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => now = DateTime.now());
+      if (mounted &&
+          !loading &&
+          !busy &&
+          !loadFailed &&
+          !widget.readOnly &&
+          ModalRoute.of(context)?.isCurrent == true &&
+          data.active != null) {
+        final guard = timerGuardSnapshot(data, now);
+        final next = guard?['nextEventAtMillis'] as int?;
+        if (next != null && now.millisecondsSinceEpoch >= next) {
+          change(() => updateTimerGuard(data, now));
+        }
+      }
     });
   }
 
@@ -130,6 +155,12 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     });
     try {
       data = await store.load();
+      if (!widget.readOnly && updateTimerGuard(data, DateTime.now()).changed) {
+        await store.save(data);
+      }
+      if (data.active == null && data.sessions.isNotEmpty) {
+        error = data.sessions.last.autoStopReason;
+      }
     } catch (_) {
       loadFailed = true;
       error = 'Could not load your saved data. Your existing data has not been changed.';
@@ -139,7 +170,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
         await alerts.initialize();
         await alerts.sync(data);
       } catch (_) {
-        error = 'Your data is saved. Enable shift alerts again to restore reminders.';
+        error ??= 'Your data is saved. Enable shift alerts again to restore reminders.';
       }
     }
     if (mounted) {
@@ -168,7 +199,9 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       setState(() => now = DateTime.now());
-      if (!widget.readOnly && homeWidget.supported) {
+      if (!widget.readOnly &&
+          homeWidget.supported &&
+          ModalRoute.of(context)?.isCurrent == true) {
         if (busy || loading) {
           refreshWhenIdle = true;
         } else {
@@ -181,6 +214,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   @override
   void dispose() {
     timer?.cancel();
+    widgetUpdates?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -198,6 +232,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     setState(() => busy = true);
     final backup = data.toJson();
     try {
+      updateTimerGuard(data, DateTime.now());
       mutate();
       await store.save(data);
     } catch (e) {
@@ -340,9 +375,12 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                                       ),
                                     if (widget.readOnly)
                                       metrics()
-                                    else if (page == 0)
-                                      dashboard(wide)
-                                    else if (page == 1)
+                                    else if (page == 0) ...[
+                                      if (data.active?.firstUnansweredCheckIn !=
+                                          null)
+                                        timerCheckIn(),
+                                      dashboard(wide),
+                                    ] else if (page == 1)
                                       schedule()
                                     else
                                       metrics(),
@@ -415,6 +453,52 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
         ),
       ),
     ],
+  );
+
+  Widget timerCheckIn() => Padding(
+    padding: const EdgeInsets.only(bottom: 16),
+    child: card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            data.active!.kind == ShiftKind.point
+                ? 'Are you still taking care of the baby?'
+                : data.active!.interruption != null
+                ? 'Are you still interrupted?'
+                : 'Are you still working?',
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          const Text('Respond within 15 minutes to keep this timer running.'),
+          const SizedBox(height: 12),
+          FilledButton(
+            onPressed: busy
+                ? null
+                : () => change(
+                    () => updateTimerGuard(
+                      data,
+                      DateTime.now(),
+                      action: 'confirmTimer',
+                    ),
+                  ),
+            child: const Text('Yes, keep going'),
+          ),
+          TextButton(
+            onPressed: busy
+                ? null
+                : () => change(
+                    () => updateTimerGuard(
+                      data,
+                      DateTime.now(),
+                      action: 'stopTimer',
+                    ),
+                  ),
+            child: const Text('Stop timer'),
+          ),
+        ],
+      ),
+    ),
   );
   Widget sidebar() => Container(
     width: 214,

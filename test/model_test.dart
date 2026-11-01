@@ -3,6 +3,31 @@ import 'package:relay/model.dart';
 
 void main() {
   test(
+    'widget color preferences survive serialization and validate opaque values',
+    () {
+      final data = RelayState(
+        widgetColors: const WidgetColors(baby: 0xFF336655, resume: 0xFFBB4400),
+      );
+      final copy = RelayState.fromJson(data.toJson());
+      expect(copy.widgetColors.baby, 0xFF336655);
+      expect(copy.widgetColors.resume, 0xFFBB4400);
+      final legacy = data.toJson()..remove('widgetColors');
+      expect(
+        RelayState.fromJson(legacy).widgetColors.toJson(),
+        const WidgetColors().toJson(),
+      );
+      final invalid = WidgetColors.fromJson({
+        'work': -1,
+        'baby': 'red',
+        'resume': 0x00123456,
+      });
+      expect(invalid.work, const WidgetColors().work);
+      expect(invalid.baby, const WidgetColors().baby);
+      expect(invalid.resume, 0xFF123456);
+    },
+  );
+
+  test(
     'personal-time settings serialize with backwards-compatible defaults',
     () {
       final state = RelayState(

@@ -78,6 +78,10 @@ class Session {
     required this.start,
     this.end,
     this.baby,
+    this.lastConfirmedAt,
+    this.firstUnansweredCheckIn,
+    this.lastReminderAt,
+    this.autoStopReason,
     List<Interruption>? interruptions,
   }) : interruptions = interruptions ?? [];
   final Baby? baby;
@@ -85,6 +89,8 @@ class Session {
   final ShiftKind kind;
   final DateTime start;
   DateTime? end;
+  DateTime? lastConfirmedAt, firstUnansweredCheckIn, lastReminderAt;
+  String? autoStopReason;
   final List<Interruption> interruptions;
   Interruption? get interruption =>
       interruptions.isNotEmpty && interruptions.last.end == null
@@ -97,6 +103,10 @@ class Session {
     'start': start.toUtc().toIso8601String(),
     'end': end?.toUtc().toIso8601String(),
     'interruptions': interruptions.map((e) => e.toJson()).toList(),
+    'lastConfirmedAt': lastConfirmedAt?.toUtc().toIso8601String(),
+    'firstUnansweredCheckIn': firstUnansweredCheckIn?.toUtc().toIso8601String(),
+    'lastReminderAt': lastReminderAt?.toUtc().toIso8601String(),
+    'autoStopReason': autoStopReason,
   };
   factory Session.fromJson(Map<String, dynamic> j) => Session(
     shiftId: j['shiftId'],
@@ -104,6 +114,16 @@ class Session {
     kind: ShiftKind.values.byName(j['kind']),
     start: DateTime.parse(j['start']).toLocal(),
     end: j['end'] == null ? null : DateTime.parse(j['end']).toLocal(),
+    lastConfirmedAt: j['lastConfirmedAt'] == null
+        ? null
+        : DateTime.parse(j['lastConfirmedAt']).toLocal(),
+    firstUnansweredCheckIn: j['firstUnansweredCheckIn'] == null
+        ? null
+        : DateTime.parse(j['firstUnansweredCheckIn']).toLocal(),
+    lastReminderAt: j['lastReminderAt'] == null
+        ? null
+        : DateTime.parse(j['lastReminderAt']).toLocal(),
+    autoStopReason: j['autoStopReason'] as String?,
     interruptions: (j['interruptions'] as List)
         .map((e) => Interruption.fromJson(e))
         .toList(),
@@ -119,6 +139,57 @@ int overlapSeconds(DateTime a, DateTime b, DateTime from, DateTime to) =>
     1000;
 DateTime dayStart(DateTime d) => DateTime(d.year, d.month, d.day);
 
+class WidgetColors {
+  const WidgetColors({
+    this.work = 0xFF6450CA,
+    this.baby = 0xFFDDEAAD,
+    this.interruption = 0xFFF3C879,
+    this.resume = 0xFF2762B2,
+    this.end = 0xFF6450CA,
+  });
+  final int work, baby, interruption, resume, end;
+
+  WidgetColors copyWith({
+    int? work,
+    int? baby,
+    int? interruption,
+    int? resume,
+    int? end,
+  }) => WidgetColors(
+    work: work ?? this.work,
+    baby: baby ?? this.baby,
+    interruption: interruption ?? this.interruption,
+    resume: resume ?? this.resume,
+    end: end ?? this.end,
+  );
+
+  Map<String, int> toJson() => {
+    'work': work,
+    'baby': baby,
+    'interruption': interruption,
+    'resume': resume,
+    'end': end,
+  };
+
+  factory WidgetColors.fromJson(Object? value) {
+    if (value is! Map) return const WidgetColors();
+    int color(String key, int fallback) {
+      final raw = value[key];
+      if (raw is! int || raw < 0 || raw > 0xFFFFFFFF) return fallback;
+      return 0xFF000000 | (raw & 0x00FFFFFF);
+    }
+
+    const defaults = WidgetColors();
+    return WidgetColors(
+      work: color('work', defaults.work),
+      baby: color('baby', defaults.baby),
+      interruption: color('interruption', defaults.interruption),
+      resume: color('resume', defaults.resume),
+      end: color('end', defaults.end),
+    );
+  }
+}
+
 class RelayState {
   RelayState({
     List<Shift>? shifts,
@@ -127,6 +198,7 @@ class RelayState {
     this.personalTimeEnabled = false,
     this.dailyPersonalHours = 3,
     this.lastWidgetRequestId,
+    this.widgetColors = const WidgetColors(),
     List<String>? childNames,
     String? childOne,
     String? childTwo,
@@ -139,6 +211,7 @@ class RelayState {
   bool personalTimeEnabled;
   int dailyPersonalHours;
   String? lastWidgetRequestId;
+  WidgetColors widgetColors;
   List<String> childNames;
   String get childOne => childNames.first;
   set childOne(String value) => childNames[0] = value;
@@ -199,16 +272,20 @@ class RelayState {
     );
   }
 
-  void finish(DateTime now) {
+  void finish(DateTime now, {String? reason}) {
     final s = active;
     if (s == null) return;
     s.interruption?.end = now;
     s.end = now;
+    s.autoStopReason = reason;
   }
 
   void toggleInterruption(DateTime now) {
     final s = active;
     if (s == null || s.kind != ShiftKind.focus) return;
+    s.lastConfirmedAt = now;
+    s.firstUnansweredCheckIn = null;
+    s.lastReminderAt = null;
     if (s.interruption != null) {
       s.interruption!.end = now;
     } else {
@@ -359,6 +436,7 @@ class RelayState {
     'personalTimeEnabled': personalTimeEnabled,
     'dailyPersonalHours': dailyPersonalHours,
     'lastWidgetRequestId': lastWidgetRequestId,
+    'widgetColors': widgetColors.toJson(),
     'shifts': shifts.map((s) => s.toJson()).toList(),
     'sessions': sessions.map((s) => s.toJson()).toList(),
   };
@@ -370,6 +448,7 @@ class RelayState {
     personalTimeEnabled: j['personalTimeEnabled'] ?? false,
     dailyPersonalHours: (j['dailyPersonalHours'] as num?)?.toInt() ?? 3,
     lastWidgetRequestId: j['lastWidgetRequestId'] as String?,
+    widgetColors: WidgetColors.fromJson(j['widgetColors']),
     shifts: (j['shifts'] as List).map((e) => Shift.fromJson(e)).toList(),
     sessions: (j['sessions'] as List).map((e) => Session.fromJson(e)).toList(),
   );

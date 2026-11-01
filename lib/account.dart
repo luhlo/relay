@@ -11,6 +11,9 @@ import 'main.dart' show RelayHome;
 import 'model.dart';
 import 'storage.dart';
 import 'home_widget.dart';
+import 'widget_appearance.dart';
+import 'timer_guard.dart';
+import 'timer_guard_settings.dart';
 
 String get authRedirect => kIsWeb
     ? '${Uri.base.origin}${Uri.base.path}'
@@ -131,7 +134,7 @@ class _AccountGateState extends State<AccountGate> {
   Future<void> openLocalMenu() async {
     final state = await localStore.load();
     if (!mounted) return;
-    final changed = await Navigator.push<bool>(
+    await Navigator.push<bool>(
       context,
       MaterialPageRoute(
         builder: (_) => LocalAccountSettings(
@@ -147,7 +150,9 @@ class _AccountGateState extends State<AccountGate> {
         ),
       ),
     );
-    if (changed == true && mounted) {
+    // Appearance saves on its own page. Reload the dashboard whenever settings
+    // closes so it cannot publish an older palette over that confirmed save.
+    if (mounted) {
       setState(() => localRevision++);
     }
   }
@@ -361,6 +366,19 @@ class _LocalAccountSettingsState extends State<LocalAccountSettings> {
           child: Text(busy ? 'Saving…' : 'Save settings'),
         ),
         const Divider(),
+        const TimerGuardSettings(responseMinutes: timerGuardResponseMinutes),
+        OutlinedButton.icon(
+          onPressed: busy
+              ? null
+              : () => Navigator.push<bool>(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => WidgetAppearance(store: widget.store),
+                  ),
+                ),
+          icon: const Icon(Icons.palette_outlined),
+          label: const Text('Widget appearance'),
+        ),
         OutlinedButton(
           onPressed: busy ? null : widget.onSignIn,
           child: const Text('Sign in or create an account'),
@@ -896,6 +914,26 @@ class HouseholdAccount extends StatefulWidget {
   State<HouseholdAccount> createState() => _HouseholdAccountState();
 }
 
+class SignedInAccountEmail extends StatelessWidget {
+  const SignedInAccountEmail({super.key, required this.email});
+  final String? email;
+
+  @override
+  Widget build(BuildContext context) => email == null || email!.isEmpty
+      ? const SizedBox.shrink()
+      : Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Signed in as',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            SelectableText(email!),
+          ],
+        );
+}
+
 class _HouseholdAccountState extends State<HouseholdAccount> {
   final email = TextEditingController();
   late final TextEditingController familyName = TextEditingController(
@@ -1068,6 +1106,9 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
     body: FormPage(
       title: widget.household['name'],
       children: [
+        SignedInAccountEmail(
+          email: Supabase.instance.client.auth.currentUser?.email,
+        ),
         if (widget.member['role'] == 'owner') ...[
           TextField(
             controller: familyName,
@@ -1082,6 +1123,19 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
         Text(householdChildren(widget.household).join(' · ')),
         const Text(
           'Cloud changes require a connection. Use Refresh to load changes made on another device.',
+        ),
+        const TimerGuardSettings(responseMinutes: timerGuardResponseMinutes),
+        OutlinedButton.icon(
+          onPressed: busy
+              ? null
+              : () => Navigator.push<bool>(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => WidgetAppearance(store: widget.store),
+                  ),
+                ),
+          icon: const Icon(Icons.palette_outlined),
+          label: const Text('Widget appearance'),
         ),
         const Divider(),
         SwitchListTile.adaptive(
