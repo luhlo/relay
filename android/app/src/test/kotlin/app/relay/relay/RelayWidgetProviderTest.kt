@@ -28,6 +28,9 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import kotlin.math.abs
+import android.app.PendingIntent
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /** Inflate and apply the real RemoteViews, including its actions, on Android 16. */
 @RunWith(RobolectricTestRunner::class)
@@ -749,5 +752,176 @@ class RelayWidgetProviderTest {
         assertEquals(0xFFDDEAAD.toInt(), backgroundColor(root, R.id.widget_end))
         snapshot("work", colors = mapOf("work" to 0xFFE49A58, "interruption" to 0xFFF3C879))
         assertEquals(0xFFF3C879.toInt(), backgroundColor(render(), R.id.widget_interruption))
+    }
+
+    @Test
+    fun elapsedAndAppearanceRefreshesDoNotDiscardAnAlreadyDispatchedTap() {
+        snapshot("work")
+        val intent = click(render(176, 82), R.id.widget_interruption)
+        snapshot("work", elapsedSeconds = 305, colors = mapOf("version" to 3, "timer" to 0xFFE9A7BD))
+        render(376, 82)
+        val action = requireNotNull(RelayWidgetProvider.consumeAction(context, intent))
+        assertEquals("interruption", action["action"])
+        assertEquals(started, action["sessionStart"])
+    }
+
+    @Test
+    fun equivalentResponsiveRendersUseOneStableCapabilityAndPurePickerSurvivesRefresh() {
+        snapshot()
+        val initial = click(render(176, 82), R.id.widget_work)
+        val second = click(render(376, 82), R.id.widget_work)
+        assertEquals(initial.getStringExtra("widgetToken"), second.getStringExtra("widgetToken"))
+        val pickIntent = click(render(176, 82), R.id.widget_baby)
+        RelayWidgetProvider().onReceive(context, pickIntent)
+        snapshot(elapsedSeconds = 7)
+        assertEquals(View.VISIBLE, visibility(render(376, 82), R.id.widget_picker))
+        assertEquals("Child 1", text(render(176, 82), R.id.widget_baby_0))
+        assertNotNull(RelayWidgetProvider.consumeAction(context, initial))
+    }
+
+    @Test
+    fun generationInPendingIntentIdentityPreventsOldViewsFromRetargetingNewState() {
+        snapshot("work")
+        val root = render(176, 82)
+        val response = click(root, R.id.widget_interruption)
+        val token = requireNotNull(response.getStringExtra("widgetToken"))
+        assertTrue(response.data.toString().endsWith("/$token"))
+        val old = requireNotNull(PendingIntent.getBroadcast(context, ("42:interruption:-1").hashCode(), response,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE))
+        snapshot("interrupted")
+        val current = click(render(176, 82), R.id.widget_interruption)
+        assertNotEquals(response.data, current.data)
+        assertThrows(PendingIntent.CanceledException::class.java) { old.send() }
+        assertNull(RelayWidgetProvider.consumeAction(context, response))
+        assertEquals("interrupted", requireNotNull(RelayWidgetProvider.consumeAction(context, current))["expectedStatus"])
+    }
+
+    @Test
+    fun concurrentRenderingAndPickerRefreshKeepTheFinalPendingIntentConsumable() {
+        snapshot()
+        val method = RelayWidgetProvider.Companion.javaClass.getDeclaredMethod("viewsForSize", Context::class.java,
+            Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+        method.isAccessible = true
+        val pool = Executors.newFixedThreadPool(3)
+        try {
+            val jobs = (0 until 24).map { index -> pool.submit {
+                when (index % 3) {
+                    0 -> method.invoke(RelayWidgetProvider.Companion, context, 42, 176, 82)
+                    1 -> method.invoke(RelayWidgetProvider.Companion, context, 42, 376, 82)
+                    else -> RelayWidgetProvider().onReceive(context, Intent("app.relay.relay.widget.PICK_BABY"))
+                }
+            } }
+            for (job in jobs) job.get(10, TimeUnit.SECONDS)
+        } finally { pool.shutdownNow() }
+        snapshot(elapsedSeconds = 9)
+        assertEquals(View.VISIBLE, visibility(render(176, 82), R.id.widget_picker))
+        val child = click(render(376, 82), R.id.widget_baby_1)
+        snapshot(elapsedSeconds = 10)
+        assertEquals(1, requireNotNull(RelayWidgetProvider.consumeAction(context, child))["babyIndex"])
+    }
+
+    @Test
+    fun pendingFeedbackIsImmediateTruthfulAndClearedOnlyByMatchingAcknowledgement() {
+        snapshot("work", elapsedSeconds = 300)
+        val action = requireNotNull(RelayWidgetProvider.consumeAction(context, click(render(176, 82), R.id.widget_interruption)))
+        val request = action["requestId"] as String
+        assertTrue(RelayWidgetProvider.markPending(context, source, request))
+        var root = render(176, 82)
+        assertEquals("Saving…", text(root, R.id.widget_timer_label))
+        assertEquals("Interruption", text(root, R.id.widget_interruption))
+        assertTrue(abs(SystemClock.elapsedRealtime() - root.findViewById<Chronometer>(R.id.widget_clock).base - 300000) < 2000)
+        assertNull(RelayWidgetProvider.consumeAction(context, click(root, R.id.widget_end)))
+        snapshot("work", elapsedSeconds = 301)
+        RelayWidgetProvider.reportResult(context, source, null, "unrelated-guard")
+        assertEquals("Saving…", text(render(176, 82), R.id.widget_timer_label))
+        RelayWidgetProvider.reportResult(context, source, "Could not save", request)
+        root = render(176, 82)
+        assertEquals("Work time", text(root, R.id.widget_timer_label))
+        assertEquals("Could not save", root.findViewById<View>(R.id.widget_status).contentDescription)
+        assertNotNull(RelayWidgetProvider.consumeAction(context, click(root, R.id.widget_interruption)))
+    }
+
+    @Test
+    fun unconfirmedPendingStopsWaitingAndRequiresFreshStateBeforeAnotherMutation() {
+        snapshot()
+        val action = requireNotNull(RelayWidgetProvider.consumeAction(context, click(render(), R.id.widget_work)))
+        assertTrue(RelayWidgetProvider.markPending(context, source, action["requestId"] as String))
+        val prefs = context.getSharedPreferences("relay.home_widget.v1", Context.MODE_PRIVATE)
+        prefs.edit().putLong("pendingAt", System.currentTimeMillis() - 91000).commit()
+        val recovery = render(110, 56)
+        assertEquals("Save unconfirmed. Open Relay to refresh.", text(recovery, R.id.widget_error))
+        assertEquals("Open Relay to refresh", text(recovery, R.id.widget_work))
+        assertEquals(110, recovery.findViewById<View>(R.id.widget_work).width)
+        assertFits(recovery)
+        assertTrue(recovery.findViewById<View>(R.id.widget_work).performClick())
+        assertEquals(MainActivity::class.java.name, shadowOf(context).nextStartedActivity?.component?.className)
+        snapshot()
+        assertNotNull(RelayWidgetProvider.consumeAction(context, click(render(176, 82), R.id.widget_work)))
+    }
+
+    @Test
+    fun workerPublicationCannotRebindAnAccountAfterClearOrSignInElsewhere() {
+        snapshot()
+        RelayWidgetProvider.clear(context)
+        val old = mapOf<String, Any?>("context" to source, "status" to "work", "childNames" to listOf("Old child"))
+        RelayWidgetProvider.updateSnapshot(context, old, source)
+        assertNull(RelayWidgetProvider.currentContext(context))
+        snapshot(sourceId = "cloud:new-parent")
+        RelayWidgetProvider.updateSnapshot(context, old, source)
+        assertEquals("cloud:new-parent", RelayWidgetProvider.currentContext(context))
+        assertEquals(View.VISIBLE, visibility(render(), R.id.widget_start_actions))
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun persistentRemoteViewsRestoreControlsAfterPendingRecoveryAndRefresh() {
+        RuntimeEnvironment.setFontScale(1.3f)
+        val method = RelayWidgetProvider.Companion.javaClass.getDeclaredMethod("viewsForSize", Context::class.java,
+            Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType).apply { isAccessible = true }
+        for (mode in listOf("idle", "work")) {
+            snapshot(mode)
+            val root = render(110, 56)
+            val action = requireNotNull(RelayWidgetProvider.consumeAction(context,
+                click(root, if (mode == "idle") R.id.widget_work else R.id.widget_interruption)))
+            RelayWidgetProvider.markPending(context, source, action["requestId"] as String)
+            fun reapply() {
+                (method.invoke(RelayWidgetProvider.Companion, context, 42, 110, 56) as RemoteViews).reapply(context, root)
+                root.measure(View.MeasureSpec.makeMeasureSpec(110, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(56, View.MeasureSpec.EXACTLY))
+                root.layout(0, 0, 110, 56)
+                assertFits(root)
+            }
+            reapply()
+            if (mode == "work") {
+                assertEquals(View.GONE, visibility(root, R.id.widget_error))
+                assertEquals("Saving…", text(root, R.id.widget_timer_label))
+                assertEquals(36, root.findViewById<View>(R.id.widget_end).height)
+            } else assertEquals("Saving…", text(root, R.id.widget_error))
+            context.getSharedPreferences("relay.home_widget.v1", Context.MODE_PRIVATE).edit()
+                .putLong("pendingAt", System.currentTimeMillis() - 91000).commit()
+            reapply()
+            assertEquals("Open Relay to refresh", text(root, R.id.widget_work))
+            assertEquals(110, root.findViewById<View>(R.id.widget_work).width)
+            snapshot(mode)
+            reapply()
+            assertEquals("Work Time", text(root, R.id.widget_work))
+            assertEquals(View.VISIBLE, visibility(root, R.id.widget_baby))
+            assertTrue(root.findViewById<View>(R.id.widget_work).isEnabled)
+            if (mode == "idle") assertEquals(55, root.findViewById<View>(R.id.widget_work).width)
+            else assertEquals(View.VISIBLE, visibility(root, R.id.widget_session_actions))
+        }
+        RuntimeEnvironment.setFontScale(1f)
+    }
+
+    @Test
+    fun matchingSavedReceiptClearsPendingWithoutOptimisticallyChangingState() {
+        snapshot()
+        val action = requireNotNull(RelayWidgetProvider.consumeAction(context, click(render(), R.id.widget_work)))
+        RelayWidgetProvider.markPending(context, source, action["requestId"] as String)
+        assertEquals(View.GONE, visibility(render(), R.id.widget_session_summary))
+        RelayWidgetProvider.updateSnapshot(context, mapOf("context" to source, "status" to "work",
+            "sessionStart" to started, "childNames" to listOf("Child 1", "Child 2"),
+            "requestId" to action["requestId"], "elapsedSeconds" to 1, "running" to true), source)
+        assertEquals("Work time", text(render(), R.id.widget_timer_label))
+        assertEquals("Interruption", text(render(), R.id.widget_interruption))
     }
 }

@@ -52,6 +52,20 @@ before replacing the development installation; cloud records remain associated
 with the same Supabase login. Do not uninstall a user's development build just to
 test the Play build.
 
+## Phone widget testing
+
+Use an optimized release APK for normal phone/widget testing:
+`flutter build apk --release --target-platform android-arm64`.
+Debug APKs run a JIT kernel and make each fresh headless widget engine slower;
+versions 1.15.0/1.15.1 exposed this regression on the connected phone.
+
+Match the certificate of the installed development APK when updating it. For a
+phone signed with the development key, point `RELAY_SIGNING_PROPERTIES` at a
+private temporary file for that same key while building the release-mode test
+APK. Keep the production upload-key configuration separate. Confirm the APK has
+`libapp.so`, no `kernel_blob.bin`, the expected certificate and a higher version
+code, then use `adb install -r --user 0` to retain the phone's app data.
+
 ## Play Console
 
 1. Create/select Relay and use Play App Signing. Upload the AAB to an internal

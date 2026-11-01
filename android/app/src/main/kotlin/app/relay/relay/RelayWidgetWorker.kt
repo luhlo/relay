@@ -27,6 +27,7 @@ class RelayWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
             return Result.success()
         }
         val source = action["context"] as? String ?: return Result.success()
+        val requestId = action["requestId"] as? String
         // A queued click must never apply to a different account after sign-out.
         if (currentContext() != source) return Result.success()
         var engine: FlutterEngine? = null
@@ -70,12 +71,12 @@ class RelayWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
                 val snapshot = (completion?.get("snapshot") as? Map<*, *>)
                     ?.entries?.associate { it.key.toString() to it.value }
                 if (snapshot?.get("context") == source) {
-                    RelayWidgetProvider.updateSnapshot(applicationContext, snapshot)
+                    RelayWidgetProvider.updateSnapshot(applicationContext, snapshot, source)
                 }
                 val error = if (completion?.get("success") == true) completion["error"] as? String
                     else (completion?.get("error") as? String)
                         ?: "Save unconfirmed. Open Relay to refresh."
-                RelayWidgetProvider.reportResult(applicationContext, source, error)
+                RelayWidgetProvider.reportResult(applicationContext, source, error, requestId)
                 if (completion?.get("success") == true) {
                     applicationContext.sendBroadcast(Intent("app.relay.relay.widget.STATE_CHANGED")
                         .setPackage(applicationContext.packageName))
@@ -90,7 +91,7 @@ class RelayWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
         } catch (_: Exception) {
             if (currentContext() == source) {
                 RelayWidgetProvider.reportResult(
-                    applicationContext, source, "Could not save. Open Relay to refresh.",
+                    applicationContext, source, "Could not save. Open Relay to refresh.", requestId,
                 )
                 if (action["action"] == "guard") RelayTimerGuard.retryAfterFailure(applicationContext, source)
             }
