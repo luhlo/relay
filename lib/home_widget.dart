@@ -76,6 +76,17 @@ Map<String, dynamic> widgetSnapshot(
         : interrupted
         ? 'interrupted'
         : 'work',
+    'timerLabel': active == null
+        ? 'Choose your time'
+        : active.kind == ShiftKind.point
+        ? baby == null
+              ? 'Baby time'
+              : baby == Baby.both
+              ? 'All babies time'
+              : '${state.babyName(baby)} time'
+        : interrupted
+        ? 'Interruption time'
+        : 'Work time',
     'childNames': state.childNames,
     'elapsedSeconds': interrupted
         ? interruptionSeconds

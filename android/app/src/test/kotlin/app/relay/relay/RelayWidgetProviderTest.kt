@@ -26,6 +26,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import kotlin.math.abs
 
 /** Inflate and apply the real RemoteViews, including its actions, on Android 16. */
@@ -42,7 +43,7 @@ class RelayWidgetProviderTest {
         context.getSharedPreferences("relay.home_widget.v1", Context.MODE_PRIVATE).edit().clear().commit()
     }
 
-    private fun snapshot(status: String = "idle", count: Int = 2, colors: Map<String, Any?>? = null, sourceId: String = source, elapsedSeconds: Int = 300) {
+    private fun snapshot(status: String = "idle", count: Int = 2, colors: Map<String, Any?>? = null, sourceId: String = source, elapsedSeconds: Int = 300, timerLabel: String? = null, subtitle: String? = null) {
         val state = mutableMapOf<String, Any?>(
             "context" to sourceId,
             "status" to status,
@@ -50,8 +51,9 @@ class RelayWidgetProviderTest {
             "elapsedSeconds" to elapsedSeconds,
             "running" to (status != "idle"),
             "sessionStart" to if (status == "idle") null else started,
-            "subtitle" to if (status == "baby") "Child 2" else if (status == "interrupted") "Interruption time" else "Actual work time",
+            "subtitle" to (subtitle ?: if (status == "baby") "Child 2" else if (status == "interrupted") "Interruption time" else "Actual work time"),
         )
+        if (timerLabel != null) state["timerLabel"] = timerLabel
         if (colors != null) state["colors"] = colors
         RelayWidgetProvider.updateSnapshot(context, state)
     }
@@ -133,7 +135,7 @@ class RelayWidgetProviderTest {
     fun workTimerRunsAndInterruptionClickPreservesSessionGuard() {
         snapshot("work")
         val root = render()
-        assertEquals("Work Time · actual work time", root.findViewById<View>(R.id.widget_session_summary).contentDescription.toString())
+        assertEquals("Work time", root.findViewById<View>(R.id.widget_session_summary).contentDescription.toString())
         assertEquals(View.VISIBLE, visibility(root, R.id.widget_clock))
         assertEquals(View.GONE, visibility(root, R.id.widget_time_static))
         val elapsed = SystemClock.elapsedRealtime() - root.findViewById<Chronometer>(R.id.widget_clock).base
@@ -157,8 +159,8 @@ class RelayWidgetProviderTest {
         SystemClock.sleep(2000)
         assertTrue(abs(SystemClock.elapsedRealtime() - clock.base - 37000) < 2000)
         assertEquals("Resume", text(root, R.id.widget_interruption))
-        assertEquals(0xFFF3C879.toInt(), backgroundColor(root, R.id.widget_session_summary))
-        assertEquals(0xFF2762B2.toInt(), backgroundColor(root, R.id.widget_interruption))
+        assertEquals(0xFFEEEBFC.toInt(), backgroundColor(root, R.id.widget_session_summary))
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_interruption))
         assertNotEquals(backgroundColor(root, R.id.widget_session_summary), backgroundColor(root, R.id.widget_interruption))
         val action = requireNotNull(RelayWidgetProvider.consumeAction(context, click(root, R.id.widget_end)))
         assertEquals("end", action["action"])
@@ -169,7 +171,7 @@ class RelayWidgetProviderTest {
     fun babyTimeShowsSelectedBabyWithoutInterruptionControl() {
         snapshot("baby")
         val root = render()
-        assertEquals("Baby Time · Child 2", root.findViewById<View>(R.id.widget_session_summary).contentDescription.toString())
+        assertEquals("Child 2 time", root.findViewById<View>(R.id.widget_session_summary).contentDescription.toString())
         assertEquals(View.VISIBLE, visibility(root, R.id.widget_change_baby))
         assertEquals(View.GONE, visibility(root, R.id.widget_interruption))
         assertEquals(View.VISIBLE, visibility(root, R.id.widget_session_actions))
@@ -385,13 +387,14 @@ class RelayWidgetProviderTest {
     }
 
     @Test
-    fun activeTimerIsCenteredAboveTwoEqualFullColorActionRegions() {
+    fun activeTimerAndVisibleLabelStayAboveTwoEqualFullColorActionRegions() {
         for (mode in listOf("work", "interrupted", "baby")) {
             snapshot(mode)
             for ((width, height) in listOf(176 to 82, 376 to 82)) {
                 val root = render(width, height)
                 val timer = root.findViewById<TextView>(R.id.widget_clock)
-                assertEquals(width, timer.width)
+                assertEquals(if (width < 240) 76 else 80, timer.width)
+                assertTrue(root.findViewById<TextView>(R.id.widget_timer_label).width > 0)
                 assertEquals(Gravity.CENTER, timer.gravity)
                 val first = root.findViewById<View>(if (mode == "baby") R.id.widget_change_baby else R.id.widget_interruption)
                 val end = root.findViewById<View>(R.id.widget_end)
@@ -399,7 +402,7 @@ class RelayWidgetProviderTest {
                 assertEquals(width / 2, first.width)
                 assertEquals(first.right, end.left)
                 assertEquals(width, end.right)
-                assertEquals(height - 18, first.height)
+                assertEquals(height - 20, first.height)
                 assertEquals(first.height, end.height)
                 assertEquals(View.GONE, visibility(root, R.id.widget_status))
                 assertFits(root)
@@ -467,17 +470,17 @@ class RelayWidgetProviderTest {
         root = render()
         assertEquals(0xFFFFEEDD.toInt(), backgroundColor(root, R.id.widget_interruption))
         assertEquals(0xFF24232C.toInt(), root.findViewById<TextView>(R.id.widget_interruption).currentTextColor)
-        assertEquals(0xFF005500.toInt(), backgroundColor(root, R.id.widget_session_summary))
-        assertEquals(Color.WHITE, root.findViewById<TextView>(R.id.widget_clock).currentTextColor)
+        assertEquals(0xFFEEEBFC.toInt(), backgroundColor(root, R.id.widget_session_summary))
+        assertEquals(0xFF24232C.toInt(), root.findViewById<TextView>(R.id.widget_clock).currentTextColor)
         snapshot("baby")
         root = render()
         assertEquals(0xFF112244.toInt(), backgroundColor(root, R.id.widget_change_baby))
-        assertEquals(0xFF112244.toInt(), backgroundColor(root, R.id.widget_session_summary))
+        assertEquals(0xFFEEEBFC.toInt(), backgroundColor(root, R.id.widget_session_summary))
         pick("PICK_BABY")
         root = render()
-        assertEquals(0xFF112244.toInt(), backgroundColor(root, R.id.widget_baby_0))
-        assertEquals(0xFFFFEE00.toInt(), backgroundColor(root, R.id.widget_baby_1))
-        assertEquals(0xFF005500.toInt(), backgroundColor(root, R.id.widget_all_babies))
+        assertEquals(0xFFDDEAAD.toInt(), backgroundColor(root, R.id.widget_baby_0))
+        assertEquals(0xFFEEEBFC.toInt(), backgroundColor(root, R.id.widget_baby_1))
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_all_babies))
         snapshot(sourceId = "cloud:different-parent")
         assertEquals(0xFF6450CA.toInt(), backgroundColor(render(), R.id.widget_work))
     }
@@ -498,7 +501,7 @@ class RelayWidgetProviderTest {
         root = render()
         assertEquals(Color.WHITE, backgroundColor(root, R.id.widget_interruption))
         assertEquals(0xFF24232C.toInt(), root.findViewById<TextView>(R.id.widget_interruption).currentTextColor)
-        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_end))
+        assertEquals(0xFFDDEAAD.toInt(), backgroundColor(root, R.id.widget_end))
         RelayWidgetProvider.clear(context)
         snapshot()
         assertEquals(0xFF6450CA.toInt(), backgroundColor(render(), R.id.widget_work))
@@ -509,5 +512,172 @@ class RelayWidgetProviderTest {
         snapshot(colors = mapOf("work" to 0xFFE49A58))
         val root = render()
         assertEquals(0xFF24232C.toInt(), root.findViewById<TextView>(R.id.widget_work).currentTextColor)
+    }
+
+    @Test
+    fun timerLabelUsesExplicitChildNameAndFallsBackForOlderSnapshots() {
+        for ((mode, subtitle, expected) in listOf(
+            Triple("work", "Actual work time", "Work time"),
+            Triple("interrupted", "Anything", "Interruption time"),
+            Triple("baby", "Baby 1", "Baby 1 time"),
+            Triple("baby", "All babies", "All babies time"),
+            Triple("baby", "", "Baby time"),
+        )) {
+            snapshot(mode, subtitle = subtitle)
+            assertEquals(expected, text(render(176, 82), R.id.widget_timer_label))
+        }
+        snapshot("baby", timerLabel = "Avery time", subtitle = "Old label")
+        assertEquals("Avery time", text(render(176, 82), R.id.widget_timer_label))
+        snapshot("baby", timerLabel = "Baby 1 time")
+        assertEquals("Baby 1", text(render(110, 56), R.id.widget_timer_label))
+        assertEquals("Baby 1 time", render(110, 56).findViewById<View>(R.id.widget_session_summary).contentDescription)
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun longNamesEllipsizeWhileTheWholeTimerFitsAtMinimumAndPhoneSizes() {
+        for (scale in listOf(1f, 1.3f)) {
+            RuntimeEnvironment.setFontScale(scale)
+            snapshot("baby", timerLabel = "Alexandria Penelope Clementine time")
+            for ((width, height) in listOf(110 to 56, 136 to 60, 176 to 82, 376 to 82)) {
+                val root = render(width, height)
+                val label = root.findViewById<TextView>(R.id.widget_timer_label)
+                val clock = root.findViewById<Chronometer>(R.id.widget_clock)
+                val value = root.findViewById<View>(R.id.widget_timer_value)
+                assertTrue("Name must retain visible space", label.width - label.totalPaddingLeft - label.totalPaddingRight >= 30)
+                assertTrue("Name and timer may not overlap", label.right <= value.left)
+                assertTrue("Full hours/minutes/seconds must fit", clock.paint.measureText("20:00:00") <= clock.width)
+                if (width < 240) {
+                    assertTrue("A name prefix should survive at width $width scale $scale", label.layout.getEllipsisStart(0) > 0)
+                    assertTrue("Long name should ellipsize at width $width scale $scale", label.layout.getEllipsisCount(0) > 0)
+                }
+                assertFits(root)
+            }
+        }
+        RuntimeEnvironment.setFontScale(1f)
+    }
+
+    @Test
+    fun everyWidgetSurfaceUsesItsOwnBackgroundAndTextOverride() {
+        val roles = listOf("work", "baby", "interruption", "resume", "end", "timer", "allBabies", "navigation", "notice") +
+            (0..7).map { "child$it" }
+        val backgrounds = roles.mapIndexed { index, role -> role to (0xFF000000L or (0x123456 + index * 0x090703).toLong()) }.toMap()
+        val foregrounds = roles.mapIndexed { index, role -> role to (0xFF000000L or (0xEFDAC0 - index * 0x030507).toLong()) }.toMap()
+        val colors = backgrounds + mapOf("version" to 2, "text" to foregrounds)
+        fun assertStyle(root: View, id: Int, role: String, textOnly: Boolean = false) {
+            if (!textOnly) assertEquals("Background for $role", backgrounds.getValue(role).toInt(), backgroundColor(root, id))
+            assertEquals("Text for $role", foregrounds.getValue(role).toInt(), root.findViewById<TextView>(id).currentTextColor)
+        }
+        snapshot(colors = colors)
+        var root = render(176, 82)
+        assertStyle(root, R.id.widget_work, "work")
+        assertStyle(root, R.id.widget_baby, "baby")
+        RelayWidgetProvider.reportResult(context, source, "Reconnect")
+        assertStyle(render(176, 82), R.id.widget_error, "notice")
+        for (mode in listOf("work", "interrupted", "baby")) {
+            snapshot(mode)
+            RelayWidgetProvider.reportResult(context, source, "Reconnect")
+            root = render(176, 82)
+            assertEquals(backgrounds.getValue("timer").toInt(), backgroundColor(root, R.id.widget_session_summary))
+            for (id in listOf(R.id.widget_clock, R.id.widget_time_static, R.id.widget_timer_label)) assertStyle(root, id, "timer", true)
+            assertStyle(root, R.id.widget_status, "notice")
+            assertStyle(root, R.id.widget_end, "end")
+            assertStyle(root, if (mode == "baby") R.id.widget_change_baby else R.id.widget_interruption,
+                if (mode == "baby") "baby" else if (mode == "interrupted") "resume" else "interruption")
+        }
+        snapshot(count = 3)
+        pick("PICK_BABY")
+        root = render(376, 82)
+        for ((index, id) in listOf(R.id.widget_baby_0, R.id.widget_baby_1, R.id.widget_baby_2).withIndex()) assertStyle(root, id, "child$index")
+        assertStyle(root, R.id.widget_all_babies, "allBabies")
+        snapshot(count = 8)
+        pick("PICK_BABY")
+        for (index in 0..8) {
+            root = render(176, 82)
+            assertStyle(root, R.id.widget_selected_baby, if (index == 8) "allBabies" else "child$index")
+            assertStyle(root, R.id.widget_previous_baby, "navigation")
+            assertStyle(root, R.id.widget_next_baby, "navigation")
+            pick("PICK_NEXT")
+        }
+    }
+
+    @Test
+    fun partialPalettesPreserveOtherRolesAndAutomaticTextRemovesAnOverride() {
+        snapshot(colors = mapOf("version" to 2, "work" to 0xFFE49A58,
+            "child7" to 0xFF123456, "timer" to 0xFF345678, "text" to mapOf("work" to 0xFFFFFFFF)))
+        snapshot()
+        assertEquals(Color.WHITE, render().findViewById<TextView>(R.id.widget_work).currentTextColor)
+        snapshot(colors = mapOf("version" to 2, "baby" to 0xFF101010, "text" to emptyMap<String, Any>()))
+        var root = render()
+        assertEquals(0xFFE49A58.toInt(), backgroundColor(root, R.id.widget_work))
+        assertEquals(0xFF24232C.toInt(), root.findViewById<TextView>(R.id.widget_work).currentTextColor)
+        snapshot("baby", count = 8)
+        assertEquals(0xFF345678.toInt(), backgroundColor(render(), R.id.widget_session_summary))
+        pick("PICK_BABY")
+        repeat(7) { pick("PICK_NEXT") }
+        root = render()
+        assertEquals(0xFF123456.toInt(), backgroundColor(root, R.id.widget_selected_baby))
+        snapshot(sourceId = "cloud:other-parent")
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(render(), R.id.widget_work))
+    }
+
+    @Test
+    fun legacyDefaultPreferencesAndSnapshotsAdoptTheHarmoniousPalette() {
+        val legacy = mapOf("work" to 0xFF6450CA, "baby" to 0xFFDDEAAD, "interruption" to 0xFFF3C879,
+            "resume" to 0xFF2762B2, "end" to 0xFF6450CA)
+        val prefs = context.getSharedPreferences("relay.home_widget.v1", Context.MODE_PRIVATE)
+        prefs.edit().putString("context", source).putString("status", "interrupted").apply {
+            for ((role, color) in legacy) putInt("color:$role", color.toInt())
+        }.commit()
+        var root = render()
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_interruption))
+        assertEquals(0xFFDDEAAD.toInt(), backgroundColor(root, R.id.widget_end))
+        assertEquals(0xFFEEEBFC.toInt(), backgroundColor(root, R.id.widget_session_summary))
+        assertEquals(2, prefs.getInt("paletteVersion", 0))
+        snapshot("interrupted", colors = legacy)
+        root = render()
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_interruption))
+        assertEquals(0xFFDDEAAD.toInt(), backgroundColor(root, R.id.widget_end))
+    }
+
+    @Test
+    fun legacyCustomAndIncompletePalettesKeepTheirOriginalColors() {
+        val prefs = context.getSharedPreferences("relay.home_widget.v1", Context.MODE_PRIVATE)
+        prefs.edit().putString("context", source).putString("status", "interrupted")
+            .putInt("color:work", 0xFFE49A58.toInt()).putInt("color:resume", 0xFF2762B2.toInt())
+            .putInt("color:end", 0xFF6450CA.toInt()).commit()
+        var root = render()
+        assertEquals(0xFF2762B2.toInt(), backgroundColor(root, R.id.widget_interruption))
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_end))
+        snapshot(colors = mapOf("work" to 0xFFE49A58, "baby" to 0xFFDDEAAD,
+            "interruption" to 0xFFF3C879, "resume" to 0xFF2762B2, "end" to 0xFF6450CA))
+        snapshot("interrupted")
+        root = render()
+        assertEquals(0xFF2762B2.toInt(), backgroundColor(root, R.id.widget_interruption))
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_end))
+        assertEquals(0xFFEEEBFC.toInt(), backgroundColor(root, R.id.widget_session_summary))
+    }
+
+    @Test
+    fun unversionedExtendedBackgroundOrTextPreferencesDoNotMigrateLegacyColors() {
+        val legacy = mapOf("work" to 0xFF6450CA, "baby" to 0xFFDDEAAD, "interruption" to 0xFFF3C879,
+            "resume" to 0xFF2762B2, "end" to 0xFF6450CA)
+        val prefs = context.getSharedPreferences("relay.home_widget.v1", Context.MODE_PRIVATE)
+        prefs.edit().putString("context", source).putString("status", "interrupted")
+            .putInt("color:timer", 0xFF345678.toInt()).apply {
+                for ((role, color) in legacy) putInt("color:$role", color.toInt())
+            }.commit()
+        var root = render()
+        assertEquals(0xFF2762B2.toInt(), backgroundColor(root, R.id.widget_interruption))
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_end))
+        assertEquals(0xFF345678.toInt(), backgroundColor(root, R.id.widget_session_summary))
+        snapshot("interrupted", colors = legacy + mapOf("timer" to 0xFF345678))
+        root = render()
+        assertEquals(0xFF2762B2.toInt(), backgroundColor(root, R.id.widget_interruption))
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_end))
+        snapshot("interrupted", colors = legacy + mapOf("text" to mapOf("work" to 0xFFFFFFFF)))
+        root = render()
+        assertEquals(0xFF2762B2.toInt(), backgroundColor(root, R.id.widget_interruption))
+        assertEquals(0xFF6450CA.toInt(), backgroundColor(root, R.id.widget_end))
     }
 }

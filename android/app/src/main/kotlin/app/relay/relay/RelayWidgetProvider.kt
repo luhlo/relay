@@ -6,10 +6,12 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.net.Uri
 import android.graphics.Color
 import android.os.Bundle
 import android.os.SystemClock
+import android.util.TypedValue
 import android.view.View
 import android.widget.RemoteViews
 import org.json.JSONArray
@@ -75,13 +77,27 @@ open class RelayWidgetProvider : AppWidgetProvider() {
         private const val LAUNCH_ACTION = "app.relay.relay.widget.TRACK"
         private fun preferences(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-        private val defaultColors = mapOf(
+        private val legacyDefaultColors = mapOf(
             "work" to 0xFF6450CA.toInt(),
             "baby" to 0xFFDDEAAD.toInt(),
             "interruption" to 0xFFF3C879.toInt(),
             "resume" to 0xFF2762B2.toInt(),
             "end" to 0xFF6450CA.toInt(),
         )
+
+        private val defaultColors = mapOf(
+            "work" to 0xFF6450CA.toInt(),
+            "baby" to 0xFFDDEAAD.toInt(),
+            "interruption" to 0xFFF3C879.toInt(),
+            "resume" to 0xFF6450CA.toInt(),
+            "end" to 0xFFDDEAAD.toInt(),
+            "timer" to 0xFFEEEBFC.toInt(),
+            "allBabies" to 0xFF6450CA.toInt(),
+            "navigation" to 0xFFEEEBFC.toInt(),
+            "notice" to 0xFFEEEBFC.toInt(),
+        ) + (0..7).associate { index ->
+            "child$index" to listOf(0xFFDDEAAD.toInt(), 0xFFEEEBFC.toInt(), 0xFFF3C879.toInt())[index % 3]
+        }
 
         private fun opaqueColor(value: Any?, fallback: Int): Int {
             val number = (value as? Number)?.toLong() ?: return fallback
@@ -106,16 +122,35 @@ open class RelayWidgetProvider : AppWidgetProvider() {
             return if (inkContrast >= whiteContrast) ink else Color.WHITE
         }
 
-        private fun styleButton(views: RemoteViews, id: Int, color: Int) {
-            views.setInt(id, "setBackgroundColor", color)
-            views.setTextColor(id, foregroundColor(color))
+        /** Migrate only the original default palette; an existing custom palette is preserved. */
+        private fun migratePalette(prefs: SharedPreferences) {
+            if (prefs.getInt("paletteVersion", 0) >= 2) return
+            val hasExtended = defaultColors.keys.any { it !in legacyDefaultColors && prefs.contains("color:$it") } ||
+                prefs.all.keys.any { it.startsWith("text:") }
+            val oldDefaults = !hasExtended && legacyDefaultColors.all { (role, color) ->
+                prefs.contains("color:$role") && prefs.getInt("color:$role", color) == color
+            }
+            val edit = prefs.edit()
+            for ((role, fallback) in defaultColors) {
+                val color = if (oldDefaults) fallback else prefs.getInt("color:$role", fallback)
+                edit.putInt("color:$role", color)
+            }
+            edit.putInt("paletteVersion", 2).commit()
         }
 
-        private fun paleColor(color: Int): Int = Color.rgb(
-            (Color.red(color) * 0.2 + 255 * 0.8).toInt(),
-            (Color.green(color) * 0.2 + 255 * 0.8).toInt(),
-            (Color.blue(color) * 0.2 + 255 * 0.8).toInt(),
-        )
+        private fun timerLabel(status: String?, supplied: String?, subtitle: String): String =
+            supplied?.trim()?.take(120)?.takeIf { it.isNotEmpty() } ?: when (status) {
+                "work" -> "Work time"
+                "interrupted" -> "Interruption time"
+                "baby" -> subtitle.trim().take(100).let {
+                    when {
+                        it.isEmpty() -> "Baby time"
+                        it.endsWith(" time", ignoreCase = true) -> it
+                        else -> "$it time"
+                    }
+                }
+                else -> ""
+            }
 
         @JvmStatic
         fun updateSnapshot(context: Context, snapshot: Map<String, Any?>) {
@@ -126,20 +161,43 @@ open class RelayWidgetProvider : AppWidgetProvider() {
             }.orEmpty().ifEmpty { listOf("Baby 1") }
             val status = (snapshot["status"] as? String)?.takeIf { it in setOf("idle", "work", "baby", "interrupted") } ?: "idle"
             val prefs = preferences(context)
+            migratePalette(prefs)
             val edit = prefs.edit()
             val suppliedColors = snapshot["colors"] as? Map<*, *>
             val sameSource = prefs.getString("context", null) == source
-            for ((name, fallback) in defaultColors) {
-                val previous = if (sameSource) prefs.getInt("color:$name", fallback) else fallback
-                val color = if (suppliedColors == null) previous else opaqueColor(suppliedColors[name], fallback)
-                edit.putInt("color:$name", color)
+            val legacyDefaults = suppliedColors != null &&
+                ((suppliedColors["version"] as? Number)?.toInt() ?: 0) < 2 &&
+                !suppliedColors.containsKey("text") &&
+                defaultColors.keys.none { it !in legacyDefaultColors && suppliedColors.containsKey(it) } &&
+                legacyDefaultColors.all { (role, color) ->
+                    suppliedColors[role] is Number && opaqueColor(suppliedColors[role], 0) == color
+                }
+            val suppliedText = suppliedColors?.get("text") as? Map<*, *>
+            for ((role, fallback) in defaultColors) {
+                val previous = if (sameSource) prefs.getInt("color:$role", fallback) else fallback
+                val color = when {
+                    suppliedColors == null -> previous
+                    legacyDefaults && role in legacyDefaultColors -> fallback
+                    suppliedColors.containsKey(role) -> opaqueColor(suppliedColors[role], fallback)
+                    else -> previous
+                }
+                edit.putInt("color:$role", color)
+                if (suppliedColors != null || !sameSource) {
+                    val value = suppliedText?.get(role)
+                    if (value is Number && value.toLong() in Int.MIN_VALUE.toLong()..0xFFFFFFFFL) {
+                        edit.putInt("text:$role", opaqueColor(value, foregroundColor(color)))
+                    } else edit.remove("text:$role")
+                }
             }
+            val subtitle = (snapshot["subtitle"] as? String).orEmpty().take(160)
             // Old launcher click capabilities must not survive an account/snapshot change.
             for (key in prefs.all.keys) if (key.startsWith("token:")) edit.remove(key)
             edit.putString("context", source)
                 .putString("status", status)
                 .putString("childNames", JSONArray(names).toString())
-                .putString("subtitle", (snapshot["subtitle"] as? String).orEmpty().take(160))
+                .putString("subtitle", subtitle)
+                .putString("timerLabel", timerLabel(status, snapshot["timerLabel"] as? String, subtitle))
+                .putInt("paletteVersion", 2)
                 .putString("sessionStart", snapshot["sessionStart"] as? String)
                 .putString("message", (snapshot["message"] as? String).orEmpty().take(160))
                 .putLong("elapsedSeconds", max(0L, (snapshot["elapsedSeconds"] as? Number)?.toLong() ?: 0L))
@@ -269,6 +327,7 @@ open class RelayWidgetProvider : AppWidgetProvider() {
 
         private fun viewsForSize(context: Context, id: Int, width: Int, height: Int): RemoteViews {
             val prefs = preferences(context)
+            migratePalette(prefs)
             val configured = !prefs.getString("context", "").isNullOrEmpty()
             val status = prefs.getString("status", "idle")
             val names = try {
@@ -278,33 +337,41 @@ open class RelayWidgetProvider : AppWidgetProvider() {
             val page = prefs.getInt("pickerPage", -1)
             val choosing = configured && page >= 0
             val colors = defaultColors.mapValues { (name, fallback) -> prefs.getInt("color:$name", fallback) }
-            val workColor = colors.getValue("work")
-            val babyColor = colors.getValue("baby")
-            val interruptionColor = colors.getValue("interruption")
-            val resumeColor = colors.getValue("resume")
-            val endColor = colors.getValue("end")
             val rv = RemoteViews(context.packageName, R.layout.relay_widget)
-            styleButton(rv, R.id.widget_work, workColor)
-            styleButton(rv, R.id.widget_baby, babyColor)
-            styleButton(rv, R.id.widget_end, endColor)
-            styleButton(rv, R.id.widget_change_baby, babyColor)
-            styleButton(rv, R.id.widget_interruption, if (status == "interrupted") resumeColor else interruptionColor)
-            styleButton(rv, R.id.widget_baby_0, babyColor)
-            styleButton(rv, R.id.widget_baby_1, workColor)
-            styleButton(rv, R.id.widget_baby_2, interruptionColor)
-            styleButton(rv, R.id.widget_all_babies, if (names.size == 2) interruptionColor else paleColor(workColor))
-            styleButton(rv, R.id.widget_selected_baby, babyColor)
-            styleButton(rv, R.id.widget_previous_baby, workColor)
-            styleButton(rv, R.id.widget_next_baby, workColor)
-            val timerColor = when (status) {
-                "baby" -> babyColor
-                "interrupted" -> interruptionColor
-                else -> workColor
+            fun textColor(role: String): Int = if (prefs.contains("text:$role")) {
+                prefs.getInt("text:$role", Color.WHITE)
+            } else foregroundColor(colors.getValue(role))
+            fun style(id: Int, role: String) {
+                rv.setInt(id, "setBackgroundColor", colors.getValue(role))
+                rv.setTextColor(id, textColor(role))
             }
-            rv.setInt(R.id.widget_session_summary, "setBackgroundColor", timerColor)
-            rv.setTextColor(R.id.widget_clock, foregroundColor(timerColor))
-            rv.setTextColor(R.id.widget_time_static, foregroundColor(timerColor))
-            rv.setTextColor(R.id.widget_status, foregroundColor(timerColor))
+            style(R.id.widget_work, "work")
+            style(R.id.widget_baby, "baby")
+            style(R.id.widget_end, "end")
+            style(R.id.widget_change_baby, "baby")
+            style(R.id.widget_interruption, if (status == "interrupted") "resume" else "interruption")
+            style(R.id.widget_baby_0, "child0")
+            style(R.id.widget_baby_1, "child1")
+            style(R.id.widget_baby_2, "child2")
+            style(R.id.widget_all_babies, "allBabies")
+            style(R.id.widget_previous_baby, "navigation")
+            style(R.id.widget_next_baby, "navigation")
+            style(R.id.widget_status, "notice")
+            style(R.id.widget_error, "notice")
+            rv.setInt(R.id.widget_session_summary, "setBackgroundColor", colors.getValue("timer"))
+            rv.setTextColor(R.id.widget_clock, textColor("timer"))
+            rv.setTextColor(R.id.widget_time_static, textColor("timer"))
+            rv.setTextColor(R.id.widget_timer_label, textColor("timer"))
+            // Reserve the complete timer independently of a long child name.
+            // Very narrow launchers get smaller numerals rather than losing the name.
+            val clockDp = when { width < 150 -> 62; width < 240 -> 76; else -> 80 }
+            val clockSp = when { width < 150 -> 10f; width < 240 -> 12f; else -> 14f }
+            val clockPx = (clockDp * context.resources.displayMetrics.density).toInt()
+            for (viewId in intArrayOf(R.id.widget_clock, R.id.widget_time_static)) {
+                rv.setInt(viewId, "setWidth", clockPx)
+                rv.setTextViewTextSize(viewId, TypedValue.COMPLEX_UNIT_SP, clockSp)
+            }
+            rv.setTextViewTextSize(R.id.widget_timer_label, TypedValue.COMPLEX_UNIT_SP, if (width < 150) 10f else 11f)
             rv.setViewVisibility(R.id.widget_normal, if (choosing) View.GONE else View.VISIBLE)
             rv.setViewVisibility(R.id.widget_picker, if (choosing) View.VISIBLE else View.GONE)
             if (choosing) {
@@ -315,6 +382,7 @@ open class RelayWidgetProvider : AppWidgetProvider() {
                     val index = page % (names.size + 1)
                     val selectedName = if (index == names.size) "All babies" else names[index]
                     val selectedIndex = if (index == names.size) -1 else index
+                    style(R.id.widget_selected_baby, if (selectedIndex < 0) "allBabies" else "child$selectedIndex")
                     rv.setTextViewText(R.id.widget_selected_baby, selectedName)
                     rv.setContentDescription(R.id.widget_selected_baby, "Start Baby Time for $selectedName")
                     rv.setOnClickPendingIntent(R.id.widget_selected_baby, track(context, id, "baby", selectedIndex))
@@ -351,11 +419,10 @@ open class RelayWidgetProvider : AppWidgetProvider() {
             rv.setViewVisibility(R.id.widget_start_actions, if (active) View.GONE else View.VISIBLE)
             rv.setViewVisibility(R.id.widget_status, if (message.isNotBlank()) View.VISIBLE else View.GONE)
             rv.setContentDescription(R.id.widget_status, message)
-            rv.setContentDescription(R.id.widget_session_summary, when (status) {
-                "baby" -> "Baby Time · ${prefs.getString("subtitle", "")}"
-                "interrupted" -> "Interruption time"
-                else -> "Work Time · actual work time"
-            })
+            val label = timerLabel(status, prefs.getString("timerLabel", null), prefs.getString("subtitle", "").orEmpty())
+            val visibleLabel = if (width < 150 && label.endsWith(" time", ignoreCase = true)) label.dropLast(5) else label
+            rv.setTextViewText(R.id.widget_timer_label, visibleLabel)
+            rv.setContentDescription(R.id.widget_session_summary, label)
             val running = active && prefs.getBoolean("running", false)
             val savedElapsed = prefs.getLong("elapsedSeconds", 0)
             val elapsed = savedElapsed + if (running) max(0L, (System.currentTimeMillis() - prefs.getLong("savedAt", System.currentTimeMillis())) / 1000) else 0

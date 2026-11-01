@@ -28,6 +28,7 @@ void main() {
       start.add(const Duration(minutes: 15)),
     );
     expect(snapshot['status'], 'interrupted');
+    expect(snapshot['timerLabel'], 'Interruption time');
     expect(snapshot['running'], isTrue);
     expect(snapshot['elapsedSeconds'], 300);
     expect(snapshot['workSeconds'], 600);
@@ -51,6 +52,7 @@ void main() {
       resumedAt.add(const Duration(minutes: 1)),
     );
     expect(resumed['status'], 'work');
+    expect(resumed['timerLabel'], 'Work time');
     expect(resumed['elapsedSeconds'], 660);
     final end = start.add(const Duration(minutes: 30));
     applyWidgetAction(state, action(state, 'end', end), 'local', end);
@@ -82,6 +84,7 @@ void main() {
     );
     expect(state.active!.baby, Baby.child3);
     expect(widgetSnapshot(state, 'local', start)['subtitle'], 'Mia');
+    expect(widgetSnapshot(state, 'local', start)['timerLabel'], 'Mia time');
     applyWidgetAction(
       state,
       {...action(state, 'baby', start), 'babyIndex': -1},
@@ -91,6 +94,10 @@ void main() {
     expect(state.active!.baby, Baby.both);
     expect(widgetSnapshot(state, 'local', start)['subtitle'], 'All babies');
     expect(
+      widgetSnapshot(state, 'local', start)['timerLabel'],
+      'All babies time',
+    );
+    expect(
       () => applyWidgetAction(
         state,
         {...action(state, 'baby', start), 'babyIndex': 8},
@@ -99,6 +106,19 @@ void main() {
       ),
       throwsArgumentError,
     );
+  });
+
+  test('timer labels identify idle, default children and legacy childcare', () {
+    final state = RelayState();
+    expect(
+      widgetSnapshot(state, 'local', start)['timerLabel'],
+      'Choose your time',
+    );
+    state.start(ShiftKind.point, start, baby: Baby.chloe);
+    expect(widgetSnapshot(state, 'local', start)['timerLabel'], 'Baby 1 time');
+    state.finish(start.add(const Duration(minutes: 1)));
+    state.start(ShiftKind.point, start.add(const Duration(minutes: 2)));
+    expect(widgetSnapshot(state, 'local', start)['timerLabel'], 'Baby time');
   });
 
   test(

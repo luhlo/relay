@@ -139,15 +139,93 @@ int overlapSeconds(DateTime a, DateTime b, DateTime from, DateTime to) =>
     1000;
 DateTime dayStart(DateTime d) => DateTime(d.year, d.month, d.day);
 
+/// Colors for every visible part of the Android widget. Missing text overrides
+/// use the higher-contrast choice of Relay ink and white.
 class WidgetColors {
   const WidgetColors({
     this.work = 0xFF6450CA,
     this.baby = 0xFFDDEAAD,
     this.interruption = 0xFFF3C879,
-    this.resume = 0xFF2762B2,
-    this.end = 0xFF6450CA,
+    this.resume = 0xFF6450CA,
+    this.end = 0xFFDDEAAD,
+    this.timer = 0xFFEEEBFC,
+    this.allBabies = 0xFF6450CA,
+    this.navigation = 0xFFEEEBFC,
+    this.notice = 0xFFEEEBFC,
+    this.childColors = const {},
+    this.textColors = const {},
   });
+
+  static const backgroundRoles = <String>[
+    'work',
+    'baby',
+    'interruption',
+    'resume',
+    'end',
+    'timer',
+    'allBabies',
+    'navigation',
+    'notice',
+    'child0',
+    'child1',
+    'child2',
+    'child3',
+    'child4',
+    'child5',
+    'child6',
+    'child7',
+  ];
+  static const _childDefaults = <int>[0xFFDDEAAD, 0xFFEEEBFC, 0xFFF3C879];
+  static const _legacyDefaults = <String, int>{
+    'work': 0xFF6450CA,
+    'baby': 0xFFDDEAAD,
+    'interruption': 0xFFF3C879,
+    'resume': 0xFF2762B2,
+    'end': 0xFF6450CA,
+  };
+
   final int work, baby, interruption, resume, end;
+  final int timer, allBabies, navigation, notice;
+  final Map<int, int> childColors;
+  final Map<String, int> textColors;
+
+  static int _opaque(int color) => 0xFF000000 | (color & 0x00FFFFFF);
+
+  int backgroundFor(String role) {
+    switch (role) {
+      case 'work':
+        return work;
+      case 'baby':
+        return baby;
+      case 'interruption':
+        return interruption;
+      case 'resume':
+        return resume;
+      case 'end':
+        return end;
+      case 'timer':
+        return timer;
+      case 'allBabies':
+        return allBabies;
+      case 'navigation':
+        return navigation;
+      case 'notice':
+        return notice;
+    }
+    final index = role.startsWith('child')
+        ? int.tryParse(role.substring(5))
+        : null;
+    if (index != null && index >= 0 && index < 8 && role == 'child$index') {
+      return childColors[index] ??
+          _childDefaults[index % _childDefaults.length];
+    }
+    throw ArgumentError.value(role, 'role', 'Unknown widget part');
+  }
+
+  bool usesAutomaticText(String role) => !textColors.containsKey(role);
+
+  int foregroundFor(String role) =>
+      textColors[role] ?? widgetForegroundColor(backgroundFor(role));
 
   WidgetColors copyWith({
     int? work,
@@ -155,39 +233,144 @@ class WidgetColors {
     int? interruption,
     int? resume,
     int? end,
+    int? timer,
+    int? allBabies,
+    int? navigation,
+    int? notice,
+    Map<int, int>? childColors,
+    Map<String, int>? textColors,
   }) => WidgetColors(
     work: work ?? this.work,
     baby: baby ?? this.baby,
     interruption: interruption ?? this.interruption,
     resume: resume ?? this.resume,
     end: end ?? this.end,
+    timer: timer ?? this.timer,
+    allBabies: allBabies ?? this.allBabies,
+    navigation: navigation ?? this.navigation,
+    notice: notice ?? this.notice,
+    childColors: childColors == null
+        ? this.childColors
+        : Map.unmodifiable(childColors),
+    textColors: textColors == null
+        ? this.textColors
+        : Map.unmodifiable(textColors),
   );
 
-  Map<String, int> toJson() => {
-    'work': work,
-    'baby': baby,
-    'interruption': interruption,
-    'resume': resume,
-    'end': end,
+  WidgetColors withBackground(String role, int color) {
+    final value = _opaque(color);
+    switch (role) {
+      case 'work':
+        return copyWith(work: value);
+      case 'baby':
+        return copyWith(baby: value);
+      case 'interruption':
+        return copyWith(interruption: value);
+      case 'resume':
+        return copyWith(resume: value);
+      case 'end':
+        return copyWith(end: value);
+      case 'timer':
+        return copyWith(timer: value);
+      case 'allBabies':
+        return copyWith(allBabies: value);
+      case 'navigation':
+        return copyWith(navigation: value);
+      case 'notice':
+        return copyWith(notice: value);
+    }
+    backgroundFor(role); // Validate before changing a child color.
+    final index = int.parse(role.substring(5));
+    return copyWith(childColors: {...childColors, index: value});
+  }
+
+  WidgetColors withText(String role, int? color) {
+    backgroundFor(role);
+    final updated = Map<String, int>.of(textColors);
+    if (color == null) {
+      updated.remove(role);
+    } else {
+      updated[role] = _opaque(color);
+    }
+    return copyWith(textColors: updated);
+  }
+
+  Map<String, dynamic> toJson() => {
+    'version': 2,
+    for (final role in backgroundRoles) role: _opaque(backgroundFor(role)),
+    'text': {
+      for (final entry in textColors.entries)
+        if (backgroundRoles.contains(entry.key))
+          entry.key: _opaque(entry.value),
+    },
   };
 
   factory WidgetColors.fromJson(Object? value) {
     if (value is! Map) return const WidgetColors();
-    int color(String key, int fallback) {
-      final raw = value[key];
-      if (raw is! int || raw < 0 || raw > 0xFFFFFFFF) return fallback;
-      return 0xFF000000 | (raw & 0x00FFFFFF);
-    }
+    final version = value['version'];
+    final legacy = version == null || (version is int && version < 2);
+    final untouched = _legacyDefaults.entries.every(
+      (entry) => value[entry.key] is int && value[entry.key] == entry.value,
+    );
+    final extended =
+        value.containsKey('text') ||
+        backgroundRoles.any(
+          (role) =>
+              !_legacyDefaults.containsKey(role) && value.containsKey(role),
+        );
+    // Upgrade the old shipped palette, while keeping every deliberately
+    // customized old palette. Partial/malformed maps are parsed field by field.
+    if (legacy && untouched && !extended) return const WidgetColors();
 
+    int? validColor(Object? raw) =>
+        raw is int && raw >= 0 && raw <= 0xFFFFFFFF ? _opaque(raw) : null;
     const defaults = WidgetColors();
+    int color(String role) =>
+        validColor(value[role]) ?? defaults.backgroundFor(role);
+    final texts = value['text'];
     return WidgetColors(
-      work: color('work', defaults.work),
-      baby: color('baby', defaults.baby),
-      interruption: color('interruption', defaults.interruption),
-      resume: color('resume', defaults.resume),
-      end: color('end', defaults.end),
+      work: color('work'),
+      baby: color('baby'),
+      interruption: color('interruption'),
+      resume: color('resume'),
+      end: color('end'),
+      timer: color('timer'),
+      allBabies: color('allBabies'),
+      navigation: color('navigation'),
+      notice: color('notice'),
+      childColors: Map.unmodifiable({
+        for (var index = 0; index < 8; index++)
+          if (validColor(value['child$index']) case final int color)
+            index: color,
+      }),
+      textColors: Map.unmodifiable({
+        if (texts is Map)
+          for (final role in backgroundRoles)
+            if (validColor(texts[role]) case final int color) role: color,
+      }),
     );
   }
+}
+
+/// WCAG relative luminance, shared with native widget text defaults.
+int widgetForegroundColor(int background) {
+  double linear(int channel) {
+    final srgb = channel / 255.0;
+    return srgb <= 0.04045
+        ? srgb / 12.92
+        : pow((srgb + 0.055) / 1.055, 2.4).toDouble();
+  }
+
+  double luminance(int color) =>
+      0.2126 * linear((color >> 16) & 255) +
+      0.7152 * linear((color >> 8) & 255) +
+      0.0722 * linear(color & 255);
+  const ink = 0xFF24232C;
+  final light = luminance(background);
+  final dark = luminance(ink);
+  final inkContrast = (max(light, dark) + 0.05) / (min(light, dark) + 0.05);
+  final whiteContrast = 1.05 / (light + 0.05);
+  return inkContrast >= whiteContrast ? ink : 0xFFFFFFFF;
 }
 
 class RelayState {
