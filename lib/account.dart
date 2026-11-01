@@ -14,9 +14,10 @@ import 'home_widget.dart';
 import 'widget_appearance.dart';
 import 'timer_guard.dart';
 import 'timer_guard_settings.dart';
+import 'account_privacy.dart';
 
 String get authRedirect => kIsWeb
-    ? '${Uri.base.origin}${Uri.base.path}'
+    ? '${Uri.base.origin}${Uri.base.path}${accountDeletionRequested(Uri.base) ? '?action=delete-account' : ''}'
     : 'app.relay.relay://login-callback';
 
 List<String> householdChildren(Map<String, dynamic> household) {
@@ -50,6 +51,7 @@ class _AccountGateState extends State<AccountGate> {
   Map<String, dynamic>? member, household;
   CloudStore? store;
   bool local = false, loading = true, recovery = false;
+  bool deletionRequested = kIsWeb && accountDeletionRequested(Uri.base);
   String? error;
   String? loadedUser;
   int localRevision = 0;
@@ -113,8 +115,24 @@ class _AccountGateState extends State<AccountGate> {
     }
     if (mounted && client.auth.currentUser?.id == uid) {
       setState(() => loading = false);
+      if (uid != null && deletionRequested) {
+        deletionRequested = false;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) openAccountDeletion();
+        });
+      }
     }
   }
+
+  Future<void> openAccountDeletion() => Navigator.push<void>(
+    context,
+    MaterialPageRoute(
+      builder: (pageContext) => AccountDeletionPage(
+        onDeleted: signOut,
+        onDone: () => Navigator.pop(pageContext),
+      ),
+    ),
+  );
 
   Future<void> signOut() async {
     // Local sign-out also works offline and clears the saved Supabase session.
@@ -181,7 +199,10 @@ class _AccountGateState extends State<AccountGate> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     if (client.auth.currentUser == null && !local) {
-      return AuthForm(onLocal: () => setState(() => local = true));
+      return AuthForm(
+        deletionRequested: deletionRequested,
+        onLocal: () => setState(() => local = true),
+      );
     }
     if (client.auth.currentUser == null) {
       return RelayHome(
@@ -202,12 +223,17 @@ class _AccountGateState extends State<AccountGate> {
           children: [
             Text(error!),
             FilledButton(onPressed: refresh, child: const Text('Try again')),
+            PrivacyAndAccountActions(onDeleteAccount: openAccountDeletion),
           ],
         ),
       );
     }
     if (member == null) {
-      return HouseholdSetup(onDone: refresh, onSignOut: signOut);
+      return HouseholdSetup(
+        onDone: refresh,
+        onSignOut: signOut,
+        onDeleteAccount: openAccountDeletion,
+      );
     }
     return RelayHome(
       key: ObjectKey(store),
@@ -383,6 +409,7 @@ class _LocalAccountSettingsState extends State<LocalAccountSettings> {
           onPressed: busy ? null : widget.onSignIn,
           child: const Text('Sign in or create an account'),
         ),
+        const PrivacyAndAccountActions(),
       ],
     ),
   );
@@ -424,8 +451,13 @@ class FormPage extends StatelessWidget {
 }
 
 class AuthForm extends StatefulWidget {
-  const AuthForm({super.key, required this.onLocal});
+  const AuthForm({
+    super.key,
+    required this.onLocal,
+    this.deletionRequested = false,
+  });
   final VoidCallback onLocal;
+  final bool deletionRequested;
   @override
   State<AuthForm> createState() => _AuthFormState();
 }
@@ -518,8 +550,16 @@ class _AuthFormState extends State<AuthForm> {
   @override
   Widget build(BuildContext context) => Scaffold(
     body: FormPage(
-      title: create ? 'Create your Relay account' : 'Welcome to Relay',
+      title: widget.deletionRequested
+          ? 'Sign in to delete your account'
+          : create
+          ? 'Create your Relay account'
+          : 'Welcome to Relay',
       children: [
+        if (widget.deletionRequested)
+          const Text(
+            'Sign in to your existing account to review and confirm deletion. Signing in does not delete anything.',
+          ),
         const Text(
           'Your time, together. Sign in to save your records and share with your household.',
         ),
@@ -589,11 +629,13 @@ class _AuthFormState extends State<AuthForm> {
           onPressed: busy ? null : () => submit(resend: true),
           child: const Text('Resend confirmation email'),
         ),
+        const PrivacyAndAccountActions(),
         const Divider(),
-        OutlinedButton(
-          onPressed: busy ? null : widget.onLocal,
-          child: const Text('Continue with this device’s records'),
-        ),
+        if (!widget.deletionRequested)
+          OutlinedButton(
+            onPressed: busy ? null : widget.onLocal,
+            child: const Text('Continue with this device’s records'),
+          ),
         const Text(
           'Device records stay on this device until you choose to import them into your account.',
           style: TextStyle(fontSize: 12),
@@ -608,8 +650,10 @@ class HouseholdSetup extends StatefulWidget {
     super.key,
     required this.onDone,
     required this.onSignOut,
+    this.onDeleteAccount,
   });
   final Future<void> Function() onDone, onSignOut;
+  final VoidCallback? onDeleteAccount;
   @override
   State<HouseholdSetup> createState() => _HouseholdSetupState();
 }
@@ -733,6 +777,11 @@ class _HouseholdSetupState extends State<HouseholdSetup> {
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
       actions: [
+        if (widget.onDeleteAccount != null)
+          TextButton(
+            onPressed: busy ? null : widget.onDeleteAccount,
+            child: const Text('Delete account'),
+          ),
         TextButton(
           onPressed: busy ? null : widget.onSignOut,
           child: const Text('Sign out'),
@@ -1272,6 +1321,22 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
                   if (context.mounted) Navigator.pop(context);
                 },
           child: const Text('Sign out'),
+        ),
+        PrivacyAndAccountActions(
+          onDeleteAccount: busy
+              ? null
+              : () => Navigator.push<void>(
+                  context,
+                  MaterialPageRoute(
+                    builder: (pageContext) => AccountDeletionPage(
+                      onDeleted: widget.onSignOut,
+                      onDone: () {
+                        Navigator.pop(pageContext);
+                        if (context.mounted) Navigator.pop(context);
+                      },
+                    ),
+                  ),
+                ),
         ),
       ],
     ),
