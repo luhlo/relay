@@ -8,7 +8,7 @@ class MemoryStore extends RelayStore {
   RelayState state = RelayState();
   bool fail = false;
   @override
-  Future<RelayState> load() async => state;
+  Future<RelayState> load() async => RelayState.fromJson(state.toJson());
   @override
   Future<void> save(RelayState value) async {
     if (fail) throw StateError('disk full');

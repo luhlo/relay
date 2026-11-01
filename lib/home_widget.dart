@@ -1,43 +1,22 @@
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'model.dart';
 
-/// Android launches the normal app for writes so local/cloud saves use the
-/// same authentication, revision checks, and rollback as the main controls.
+/// Foreground snapshot bridge. Widget actions are saved by a headless engine.
 class RelayHomeWidget {
   RelayHomeWidget({MethodChannel? channel})
     : _channel = channel ?? const MethodChannel('app.relay.relay/widget');
 
   static final instance = RelayHomeWidget();
   final MethodChannel _channel;
-  final _actions = StreamController<void>.broadcast();
-  bool _listening = false;
 
   bool get supported =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
-  Stream<void> get actions {
-    if (supported && !_listening) {
-      _listening = true;
-      _channel.setMethodCallHandler((call) async {
-        if (call.method == 'actionAvailable') _actions.add(null);
-      });
-    }
-    return _actions.stream;
-  }
-
-  Future<String?> pendingContext() async {
+  Future<String?> currentContext() async {
     if (!supported) return null;
-    return _channel.invokeMethod<String>('pendingContext');
-  }
-
-  Future<Map<String, dynamic>?> takeAction() async {
-    if (!supported) return null;
-    final value = await _channel.invokeMapMethod<String, dynamic>('takeAction');
-    return value;
+    return _channel.invokeMethod<String>('context');
   }
 
   Future<void> sync(RelayState state, String context, DateTime now) async {
@@ -63,6 +42,7 @@ Map<String, dynamic> widgetSnapshot(
   final baby = active?.baby;
   return {
     'context': context,
+    'requestId': state.lastWidgetRequestId,
     'status': active == null
         ? 'idle'
         : active.kind == ShiftKind.point

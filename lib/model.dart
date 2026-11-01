@@ -126,6 +126,7 @@ class RelayState {
     this.alerts = false,
     this.personalTimeEnabled = false,
     this.dailyPersonalHours = 3,
+    this.lastWidgetRequestId,
     List<String>? childNames,
     String? childOne,
     String? childTwo,
@@ -137,6 +138,7 @@ class RelayState {
   bool alerts;
   bool personalTimeEnabled;
   int dailyPersonalHours;
+  String? lastWidgetRequestId;
   List<String> childNames;
   String get childOne => childNames.first;
   set childOne(String value) => childNames[0] = value;
@@ -356,6 +358,7 @@ class RelayState {
     'alerts': alerts,
     'personalTimeEnabled': personalTimeEnabled,
     'dailyPersonalHours': dailyPersonalHours,
+    'lastWidgetRequestId': lastWidgetRequestId,
     'shifts': shifts.map((s) => s.toJson()).toList(),
     'sessions': sessions.map((s) => s.toJson()).toList(),
   };
@@ -366,6 +369,7 @@ class RelayState {
     alerts: j['alerts'] ?? false,
     personalTimeEnabled: j['personalTimeEnabled'] ?? false,
     dailyPersonalHours: (j['dailyPersonalHours'] as num?)?.toInt() ?? 3,
+    lastWidgetRequestId: j['lastWidgetRequestId'] as String?,
     shifts: (j['shifts'] as List).map((e) => Shift.fromJson(e)).toList(),
     sessions: (j['sessions'] as List).map((e) => Session.fromJson(e)).toList(),
   );

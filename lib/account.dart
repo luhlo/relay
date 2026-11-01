@@ -80,8 +80,7 @@ class _AccountGateState extends State<AccountGate> {
     });
     try {
       if (uid == null) {
-        final pending = await RelayHomeWidget.instance.pendingContext();
-        if (pending == 'local') {
+        if (await RelayHomeWidget.instance.currentContext() == 'local') {
           local = true;
         } else if (!local) {
           await RelayHomeWidget.instance.clear();

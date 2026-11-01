@@ -15,6 +15,7 @@ import 'trends.dart';
 import 'account.dart';
 import 'cloud.dart';
 import 'home_widget.dart';
+import 'widget_background.dart';
 
 import 'package:supabase_flutter/supabase_flutter.dart' hide Session;
 
@@ -42,6 +43,9 @@ Future<void> main() async {
   );
   runApp(const RelayApp());
 }
+
+@pragma('vm:entry-point')
+Future<void> relayWidgetBackground() => runWidgetBackground();
 
 class RelayApp extends StatelessWidget {
   const RelayApp({super.key});
@@ -98,9 +102,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   late final homeWidget = widget.homeWidget ?? RelayHomeWidget.instance;
   String get widgetContext =>
       store is CloudStore ? 'cloud:${(store as CloudStore).userId}' : 'local';
-  StreamSubscription<void>? widgetActions;
-  bool handlingWidgetAction = false;
-  bool widgetActionQueued = false;
+  bool refreshWhenIdle = false;
   RelayState data = RelayState();
   bool loading = true, busy = false, loadFailed = false;
   String? error;
@@ -113,9 +115,6 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (!widget.readOnly) {
-      widgetActions = homeWidget.actions.listen((_) => handleWidgetAction());
-    }
     load();
     timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => now = DateTime.now());
@@ -125,6 +124,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   Future<void> load() async {
     setState(() {
       loading = true;
+      refreshWhenIdle = false;
       loadFailed = false;
       error = null;
     });
@@ -146,7 +146,6 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
       setState(() => loading = false);
       if (!loadFailed && !widget.readOnly) {
         await syncHomeWidget();
-        await handleWidgetAction();
       }
     }
   }
@@ -165,57 +164,23 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> handleWidgetAction() async {
-    if (loading || busy || handlingWidgetAction) {
-      widgetActionQueued = true;
-      return;
-    }
-    if (loadFailed || widget.readOnly || !mounted) {
-      return;
-    }
-    widgetActionQueued = false;
-    handlingWidgetAction = true;
-    try {
-      final action = await homeWidget.takeAction();
-      if (action == null || !mounted) return;
-      setState(() => busy = true);
-      // Always reload: a different device may have changed cloud tracking
-      // while the widget was on the home screen.
-      final latest = await store.load();
-      if (!mounted) return;
-      setState(() {
-        data = latest;
-        busy = false;
-        now = DateTime.now();
-        page = 0;
-      });
-      await change(
-        () => applyWidgetAction(data, action, widgetContext, DateTime.now()),
-      );
-    } catch (_) {
-      if (mounted) {
-        setState(() => busy = false);
-        toast('Could not load your time. Reconnect and try the widget again.');
-      }
-    } finally {
-      handlingWidgetAction = false;
-      await syncHomeWidget();
-      if (widgetActionQueued && mounted) await handleWidgetAction();
-    }
-  }
-
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       setState(() => now = DateTime.now());
-      handleWidgetAction();
+      if (!widget.readOnly && homeWidget.supported) {
+        if (busy || loading) {
+          refreshWhenIdle = true;
+        } else {
+          load();
+        }
+      }
     }
   }
 
   @override
   void dispose() {
     timer?.cancel();
-    widgetActions?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -241,12 +206,15 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
       toast(
         e is CloudSaveException
             ? e.message
+            : e is LocalSaveConflict
+            ? e.message
             : e is ArgumentError
             ? e.message.toString()
             : 'Could not save this change. Please try again.',
       );
-      await syncHomeWidget();
-      if (widgetActionQueued) await handleWidgetAction();
+      // Reload after any failed or uncertain write before publishing a widget
+      // snapshot. The background engine may already hold the newer state.
+      if (mounted) await load();
       return;
     }
     try {
@@ -265,7 +233,10 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     }
     if (message != null) toast(message);
     await syncHomeWidget();
-    if (widgetActionQueued) await handleWidgetAction();
+    if (refreshWhenIdle && mounted) {
+      refreshWhenIdle = false;
+      await load();
+    }
   }
 
   Future<void> enableAlerts() async {

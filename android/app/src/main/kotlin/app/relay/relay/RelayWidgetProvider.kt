@@ -17,7 +17,7 @@ import java.util.UUID
 import kotlin.math.max
 
 /** The launcher only displays a snapshot. All tracking writes happen in Flutter. */
-class RelayWidgetProvider : AppWidgetProvider() {
+open class RelayWidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) = refreshAll(context)
 
     override fun onAppWidgetOptionsChanged(context: Context, manager: AppWidgetManager, id: Int, options: Bundle) =
@@ -40,13 +40,21 @@ class RelayWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED, Intent.ACTION_TIME_CHANGED -> refreshAll(context)
-            PICK_BABY, PICK_NEXT, PICK_CANCEL -> {
+            PICK_BABY, PICK_NEXT, PICK_PREVIOUS, PICK_FULL_NEXT, PICK_CANCEL -> {
                 // These are explicit, immutable broadcasts to this non-exported receiver.
                 val prefs = preferences(context)
                 if (prefs.getString("context", "").isNullOrEmpty()) return
                 val page = when (intent.action) {
                     PICK_BABY -> 0
-                    PICK_NEXT -> if (prefs.getInt("pickerPage", 0) == 0) 1 else 0
+                    PICK_FULL_NEXT -> 4
+                    PICK_NEXT -> {
+                        val count = (JSONArray(prefs.getString("childNames", "[]")).length().coerceAtLeast(1).let { if (it > 1) it + 1 else it })
+                        (prefs.getInt("pickerPage", 0) + 1) % count
+                    }
+                    PICK_PREVIOUS -> {
+                        val count = (JSONArray(prefs.getString("childNames", "[]")).length().coerceAtLeast(1).let { if (it > 1) it + 1 else it })
+                        (prefs.getInt("pickerPage", 0) + count - 1) % count
+                    }
                     else -> -1
                 }
                 prefs.edit().putInt("pickerPage", page).commit()
@@ -60,6 +68,8 @@ class RelayWidgetProvider : AppWidgetProvider() {
         private const val PREFS = "relay.home_widget.v1"
         private const val PICK_BABY = "app.relay.relay.widget.PICK_BABY"
         private const val PICK_NEXT = "app.relay.relay.widget.PICK_NEXT"
+        private const val PICK_FULL_NEXT = "app.relay.relay.widget.PICK_FULL_NEXT"
+        private const val PICK_PREVIOUS = "app.relay.relay.widget.PICK_PREVIOUS"
         private const val PICK_CANCEL = "app.relay.relay.widget.PICK_CANCEL"
         private const val LAUNCH_ACTION = "app.relay.relay.widget.TRACK"
         private fun preferences(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -81,11 +91,28 @@ class RelayWidgetProvider : AppWidgetProvider() {
                 .putString("childNames", JSONArray(names).toString())
                 .putString("subtitle", (snapshot["subtitle"] as? String).orEmpty().take(160))
                 .putString("sessionStart", snapshot["sessionStart"] as? String)
+                .putString("message", (snapshot["message"] as? String).orEmpty().take(160))
                 .putLong("elapsedSeconds", max(0L, (snapshot["elapsedSeconds"] as? Number)?.toLong() ?: 0L))
                 .putBoolean("running", snapshot["running"] == true)
                 .putLong("savedAt", System.currentTimeMillis())
                 .putInt("pickerPage", -1)
                 .commit()
+            refreshAll(context)
+        }
+
+        @JvmStatic
+        fun currentContext(context: Context): String? = preferences(context).getString("context", null)
+
+        @JvmStatic
+        fun reportResult(context: Context, expectedContext: String, error: String?) {
+            if (currentContext(context) != expectedContext) return
+            preferences(context).edit().putString("message", error.orEmpty().take(160)).commit()
+            refreshAll(context)
+        }
+
+        @JvmStatic
+        fun showError(context: Context, message: String) {
+            preferences(context).edit().putString("message", message.take(160)).commit()
             refreshAll(context)
         }
 
@@ -123,8 +150,11 @@ class RelayWidgetProvider : AppWidgetProvider() {
         @JvmStatic
         fun refreshAll(context: Context) {
             val manager = AppWidgetManager.getInstance(context)
-            val ids = manager.getAppWidgetIds(ComponentName(context, RelayWidgetProvider::class.java))
-            for (id in ids) manager.updateAppWidget(id, views(context, id))
+            val providers = listOf(RelayWidgetProvider::class.java, RelayCompactWidgetProvider::class.java)
+            for (provider in providers) {
+                val ids = manager.getAppWidgetIds(ComponentName(context, provider))
+                for (id in ids) manager.updateAppWidget(id, views(context, id))
+            }
         }
 
         private fun openApp(context: Context, id: Int): PendingIntent = PendingIntent.getActivity(
@@ -151,12 +181,11 @@ class RelayWidgetProvider : AppWidgetProvider() {
                 putString(slot, token)
                 putString("token:$token", payload.toString())
             }.commit()
-            return PendingIntent.getActivity(
+            return PendingIntent.getBroadcast(
                 context, ("$id:$action:$babyIndex").hashCode(),
-                Intent(context, MainActivity::class.java).apply {
+                Intent(context, RelayWidgetActionReceiver::class.java).apply {
                     this.action = LAUNCH_ACTION
                     data = Uri.parse("relay-widget://track/$id/$action/$babyIndex")
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                     putExtra("widgetToken", token)
                     putExtra("widgetAction", action)
                     putExtra("widgetContext", source)
@@ -174,47 +203,87 @@ class RelayWidgetProvider : AppWidgetProvider() {
         )
 
         private fun views(context: Context, id: Int): RemoteViews {
+            val options = AppWidgetManager.getInstance(context).getAppWidgetOptions(id)
+            val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 300)
+            val maxWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, minWidth)
+            val minHeight = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 56)
+            val maxHeight = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, minHeight)
+            // Android chooses the proper RemoteViews when the launcher rotates.
+            return RemoteViews(
+                viewsForSize(context, id, maxWidth, minHeight),
+                viewsForSize(context, id, minWidth, maxHeight),
+            )
+        }
+
+        private fun viewsForSize(context: Context, id: Int, width: Int, height: Int): RemoteViews {
             val prefs = preferences(context)
             val configured = !prefs.getString("context", "").isNullOrEmpty()
             val status = prefs.getString("status", "idle")
             val names = try {
                 val raw = JSONArray(prefs.getString("childNames", "[]"))
-                List(raw.length().coerceAtMost(8)) { raw.getString(it) }
+                List(raw.length().coerceAtMost(8)) { raw.getString(it) }.ifEmpty { listOf("Baby 1") }
             } catch (_: Exception) { listOf("Baby 1") }
             val page = prefs.getInt("pickerPage", -1)
             val choosing = configured && page >= 0
+            val compactPicker = height < 220
             val rv = RemoteViews(context.packageName, R.layout.relay_widget)
-            rv.setOnClickPendingIntent(R.id.widget_brand, openApp(context, id))
             rv.setViewVisibility(R.id.widget_normal, if (choosing) View.GONE else View.VISIBLE)
             rv.setViewVisibility(R.id.widget_picker, if (choosing) View.VISIBLE else View.GONE)
             if (choosing) {
+                rv.setViewVisibility(R.id.widget_picker_compact, if (compactPicker) View.VISIBLE else View.GONE)
+                rv.setViewVisibility(R.id.widget_picker_full, if (compactPicker) View.GONE else View.VISIBLE)
                 rv.setOnClickPendingIntent(R.id.widget_cancel, picker(context, id, PICK_CANCEL))
-                val buttonIds = intArrayOf(R.id.widget_baby_0, R.id.widget_baby_1, R.id.widget_baby_2, R.id.widget_baby_3)
-                buttonIds.forEachIndexed { offset, viewId ->
-                    val index = page * 4 + offset
-                    rv.setViewVisibility(viewId, if (index < names.size) View.VISIBLE else View.INVISIBLE)
-                    if (index < names.size) {
-                        rv.setTextViewText(viewId, names[index])
-                        rv.setOnClickPendingIntent(viewId, track(context, id, "baby", index))
+                rv.setOnClickPendingIntent(R.id.widget_cancel_compact, picker(context, id, PICK_CANCEL))
+                val choiceCount = if (names.size > 1) names.size + 1 else names.size
+                val index = page % choiceCount
+                if (compactPicker) {
+                    val selectedName = if (index == names.size) "All babies" else names[index]
+                    val selectedIndex = if (index == names.size) -1 else index
+                    rv.setTextViewText(R.id.widget_selected_baby, selectedName)
+                    rv.setContentDescription(R.id.widget_selected_baby, "Start Baby Time for $selectedName")
+                    rv.setOnClickPendingIntent(R.id.widget_selected_baby, track(context, id, "baby", selectedIndex))
+                    rv.setViewVisibility(R.id.widget_previous_baby, if (names.size > 1) View.VISIBLE else View.GONE)
+                    rv.setViewVisibility(R.id.widget_next_baby, if (names.size > 1) View.VISIBLE else View.GONE)
+                    rv.setOnClickPendingIntent(R.id.widget_previous_baby, picker(context, id, PICK_PREVIOUS))
+                    rv.setOnClickPendingIntent(R.id.widget_next_baby, picker(context, id, PICK_NEXT))
+                } else {
+                    val first = (index.coerceAtMost(names.lastIndex) / 4) * 4
+                    val buttonIds = intArrayOf(R.id.widget_baby_0, R.id.widget_baby_1, R.id.widget_baby_2, R.id.widget_baby_3)
+                    buttonIds.forEachIndexed { offset, viewId ->
+                        val child = first + offset
+                        rv.setViewVisibility(viewId, if (child < names.size) View.VISIBLE else View.INVISIBLE)
+                        if (child < names.size) {
+                            rv.setTextViewText(viewId, names[child])
+                            rv.setOnClickPendingIntent(viewId, track(context, id, "baby", child))
+                        }
                     }
+                    rv.setViewVisibility(R.id.widget_baby_row_2, if (names.size > first + 2) View.VISIBLE else View.GONE)
+                    rv.setViewVisibility(R.id.widget_all_babies, if (names.size > 1) View.VISIBLE else View.GONE)
+                    rv.setOnClickPendingIntent(R.id.widget_all_babies, track(context, id, "baby", -1))
+                    rv.setViewVisibility(R.id.widget_more_babies, if (names.size > 4) View.VISIBLE else View.GONE)
+                    rv.setTextViewText(R.id.widget_more_babies, if (first == 0) "More babies →" else "← Back")
+                    rv.setOnClickPendingIntent(R.id.widget_more_babies, picker(context, id, if (first == 0) PICK_FULL_NEXT else PICK_BABY))
                 }
-                rv.setViewVisibility(R.id.widget_baby_row_2, if (names.size > page * 4 + 2) View.VISIBLE else View.GONE)
-                rv.setViewVisibility(R.id.widget_all_babies, if (names.size > 1) View.VISIBLE else View.GONE)
-                rv.setOnClickPendingIntent(R.id.widget_all_babies, track(context, id, "baby", -1))
-                rv.setViewVisibility(R.id.widget_more_babies, if (names.size > 4) View.VISIBLE else View.GONE)
-                rv.setTextViewText(R.id.widget_more_babies, if (page == 0) "More babies →" else "← Back")
-                rv.setOnClickPendingIntent(R.id.widget_more_babies, picker(context, id, PICK_NEXT))
                 return rv
             }
-            rv.setTextViewText(R.id.widget_status, when {
-                !configured -> "Ready when you are"
-                status == "work" -> "Work Time"
-                status == "baby" -> "Baby Time"
-                status == "interrupted" -> "Interrupted"
-                else -> "Choose your time"
+            val active = configured && status != "idle"
+            val working = status == "work" || status == "interrupted"
+            val message = prefs.getString("message", "").orEmpty()
+            rv.setViewVisibility(R.id.widget_error, if (!active && message.isNotBlank()) View.VISIBLE else View.GONE)
+            rv.setTextViewText(R.id.widget_error, message)
+            rv.setContentDescription(R.id.widget_error, message)
+            rv.setViewVisibility(R.id.widget_session_summary, if (active) View.VISIBLE else View.GONE)
+            rv.setViewVisibility(R.id.widget_start_actions, if (active) View.GONE else View.VISIBLE)
+            rv.setTextViewText(R.id.widget_status, when (status) {
+                "work" -> "Work Time"
+                "baby" -> prefs.getString("subtitle", "").orEmpty().ifBlank { "Baby Time" }
+                "interrupted" -> "Interrupted"
+                else -> "Relay"
             })
-            rv.setTextViewText(R.id.widget_subtitle, if (configured) prefs.getString("subtitle", "") else "Open Relay to set up your widget")
-            val running = configured && prefs.getBoolean("running", false) && status != "idle"
+            rv.setViewVisibility(R.id.widget_status, if (width >= 180 || message.isNotBlank()) View.VISIBLE else View.GONE)
+            if (active && message.isNotBlank()) rv.setTextViewText(R.id.widget_status, if (width < 180) "!" else message)
+            rv.setContentDescription(R.id.widget_status, if (message.isNotBlank()) message else if (status == "baby") "Baby Time · ${prefs.getString("subtitle", "")}" else "Open Relay")
+            val running = active && prefs.getBoolean("running", false)
             val savedElapsed = prefs.getLong("elapsedSeconds", 0)
             val elapsed = savedElapsed + if (running) max(0L, (System.currentTimeMillis() - prefs.getLong("savedAt", System.currentTimeMillis())) / 1000) else 0
             rv.setViewVisibility(R.id.widget_clock, if (running) View.VISIBLE else View.GONE)
@@ -223,13 +292,13 @@ class RelayWidgetProvider : AppWidgetProvider() {
             rv.setTextViewText(R.id.widget_time_static, "%02d:%02d:%02d".format(elapsed / 3600, elapsed / 60 % 60, elapsed % 60))
             rv.setOnClickPendingIntent(R.id.widget_work, track(context, id, "work"))
             rv.setOnClickPendingIntent(R.id.widget_baby, if (configured) picker(context, id, PICK_BABY) else openApp(context, id))
-            val active = configured && status != "idle"
-            val working = status == "work" || status == "interrupted"
             rv.setViewVisibility(R.id.widget_session_actions, if (active) View.VISIBLE else View.GONE)
             rv.setViewVisibility(R.id.widget_interruption, if (working) View.VISIBLE else View.GONE)
-            rv.setTextViewText(R.id.widget_interruption, if (status == "interrupted") "Resume work" else "Interruption")
+            rv.setViewVisibility(R.id.widget_change_baby, if (status == "baby") View.VISIBLE else View.GONE)
+            rv.setTextViewText(R.id.widget_interruption, if (status == "interrupted") "Resume" else "Interruption")
             rv.setOnClickPendingIntent(R.id.widget_interruption, track(context, id, "interruption"))
             rv.setOnClickPendingIntent(R.id.widget_end, track(context, id, "end"))
+            rv.setOnClickPendingIntent(R.id.widget_change_baby, picker(context, id, PICK_BABY))
             return rv
         }
     }

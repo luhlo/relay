@@ -1,50 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/widget_root"
-    android:layout_width="match_parent" android:layout_height="match_parent"
-    android:backgroundTint="@null" android:background="@drawable/widget_background" android:orientation="vertical"
-    android:padding="10dp">
-    <TextView android:id="@+id/widget_brand" android:layout_width="match_parent" android:layout_height="22dp"
-        android:text="relay" android:textColor="#6450CA" android:textSize="18sp" android:textStyle="bold"
-        android:contentDescription="Open Relay" />
-    <LinearLayout android:id="@+id/widget_normal" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
-        <TextView android:id="@+id/widget_status" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:text="Ready when you are" android:textColor="#24232C" android:textSize="18sp" android:textStyle="bold" android:maxLines="1" android:ellipsize="end" />
-        <Chronometer android:id="@+id/widget_clock" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textColor="#24232C" android:textSize="22sp" android:visibility="gone" />
-        <TextView android:id="@+id/widget_time_static" android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:text="00:00:00" android:textColor="#24232C" android:textSize="22sp" />
-        <TextView android:id="@+id/widget_subtitle" android:layout_width="match_parent" android:layout_height="18dp"
-            android:text="Open Relay to set up your widget" android:textColor="#5E5B68" android:textSize="12sp" android:maxLines="1" android:ellipsize="end" />
-        <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:orientation="horizontal">
-            <Button android:id="@+id/widget_work" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
-                android:backgroundTint="@null" android:background="@drawable/widget_work_button" android:layout_marginEnd="4dp" android:text="Work Time" android:textColor="#FFFFFF" android:textSize="15sp" android:textAllCaps="false" android:padding="0dp" />
-            <Button android:id="@+id/widget_baby" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
-                android:backgroundTint="@null" android:background="@drawable/widget_baby_button" android:layout_marginStart="4dp" android:text="Baby Time" android:textColor="#24232C" android:textSize="15sp" android:textAllCaps="false" android:padding="0dp" />
-        </LinearLayout>
-        <LinearLayout android:id="@+id/widget_session_actions" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="6dp" android:orientation="horizontal" android:visibility="gone">
-            <Button android:id="@+id/widget_interruption" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="2"
-                android:backgroundTint="@null" android:background="@drawable/widget_interruption_button" android:layout_marginEnd="4dp" android:text="Interruption" android:textColor="#24232C" android:textSize="15sp" android:textAllCaps="false" android:padding="0dp" />
-            <Button android:id="@+id/widget_end" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
-                android:backgroundTint="@null" android:background="@drawable/widget_neutral_button" android:layout_marginStart="4dp" android:text="End" android:textColor="#24232C" android:textSize="15sp" android:textAllCaps="false" android:padding="0dp" />
-        </LinearLayout>
-    </LinearLayout>
-    <LinearLayout android:id="@+id/widget_picker" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
-        <LinearLayout android:layout_width="match_parent" android:layout_height="32dp" android:orientation="horizontal">
-            <TextView android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="2" android:text="Who needs you?" android:textColor="#24232C" android:textSize="17sp" android:textStyle="bold" android:gravity="center_vertical" />
-            <TextView android:id="@+id/widget_cancel" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:text="Cancel" android:textColor="#6450CA" android:textSize="14sp" android:gravity="center" />
-        </LinearLayout>
-        <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:orientation="horizontal">
-            <Button android:id="@+id/widget_baby_0" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginEnd="4dp" android:backgroundTint="@null" android:background="@drawable/widget_baby_button" android:textColor="#24232C" android:textSize="15sp" android:textAllCaps="false" android:padding="4dp" android:maxLines="1" android:ellipsize="end" />
-            <Button android:id="@+id/widget_baby_1" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginStart="4dp" android:backgroundTint="@null" android:background="@drawable/widget_baby_button" android:textColor="#24232C" android:textSize="15sp" android:textAllCaps="false" android:padding="4dp" android:maxLines="1" android:ellipsize="end" />
-        </LinearLayout>
-        <LinearLayout android:id="@+id/widget_baby_row_2" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="6dp" android:orientation="horizontal">
-            <Button android:id="@+id/widget_baby_2" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginEnd="4dp" android:backgroundTint="@null" android:background="@drawable/widget_baby_button" android:textColor="#24232C" android:textSize="15sp" android:textAllCaps="false" android:padding="4dp" android:maxLines="1" android:ellipsize="end" />
-            <Button android:id="@+id/widget_baby_3" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginStart="4dp" android:backgroundTint="@null" android:background="@drawable/widget_baby_button" android:textColor="#24232C" android:textSize="15sp" android:textAllCaps="false" android:padding="4dp" android:maxLines="1" android:ellipsize="end" />
-        </LinearLayout>
-        <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="6dp" android:orientation="horizontal">
-            <Button android:id="@+id/widget_all_babies" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:backgroundTint="@null" android:background="@drawable/widget_work_button" android:layout_marginEnd="4dp" android:text="All babies" android:textColor="#FFFFFF" android:textSize="15sp" android:textAllCaps="false" android:padding="0dp" />
-            <Button android:id="@+id/widget_more_babies" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:backgroundTint="@null" android:background="@drawable/widget_neutral_button" android:layout_marginStart="4dp" android:text="More babies →" android:textColor="#24232C" android:textSize="14sp" android:textAllCaps="false" android:padding="0dp" android:visibility="gone" />
-        </LinearLayout>
-    </LinearLayout>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@drawable/widget_background" android:backgroundTint="@null" android:padding="2dp" android:orientation="vertical" android:gravity="center_vertical">
+<LinearLayout android:id="@+id/widget_normal" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical">
+<TextView android:id="@+id/widget_error" android:layout_width="match_parent" android:layout_height="16dp" android:textColor="#9D3424" android:textSize="10sp" android:includeFontPadding="false" android:maxLines="1" android:ellipsize="end" android:visibility="gone"/>
+<LinearLayout android:id="@+id/widget_session_summary" android:visibility="gone" android:layout_width="match_parent" android:layout_height="16dp" android:orientation="horizontal" android:gravity="center_vertical">
+<TextView android:id="@+id/widget_status" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginEnd="3dp" android:gravity="center_vertical" android:includeFontPadding="false" android:text="Work Time" android:textColor="#24232C" android:textSize="12sp" android:textStyle="bold" android:maxLines="1" android:ellipsize="end"/>
+<FrameLayout android:layout_width="wrap_content" android:layout_height="match_parent">
+<Chronometer android:id="@+id/widget_clock" android:layout_width="wrap_content" android:layout_height="match_parent" android:gravity="center_vertical" android:includeFontPadding="false" android:textColor="#24232C" android:textSize="14sp" android:visibility="gone"/>
+<TextView android:id="@+id/widget_time_static" android:layout_width="wrap_content" android:layout_height="match_parent" android:gravity="center_vertical" android:includeFontPadding="false" android:text="00:00:00" android:textColor="#24232C" android:textSize="14sp"/>
+</FrameLayout>
+</LinearLayout>
+<LinearLayout android:id="@+id/widget_start_actions" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:orientation="horizontal">
+<Button android:id="@+id/widget_work" android:backgroundTint="@null" android:background="@drawable/widget_work_button" android:text="Work Time" android:textColor="#FFFFFF" android:textSize="13sp" android:textAllCaps="false" android:padding="0dp" android:minWidth="0dp" android:minHeight="0dp" android:maxLines="2" android:ellipsize="end" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="11sp" android:autoSizeMaxTextSize="14sp" android:autoSizeStepGranularity="1sp" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginEnd="2dp"/><Button android:id="@+id/widget_baby" android:backgroundTint="@null" android:background="@drawable/widget_baby_button" android:text="Baby Time" android:textColor="#24232C" android:textSize="13sp" android:textAllCaps="false" android:padding="0dp" android:minWidth="0dp" android:minHeight="0dp" android:maxLines="2" android:ellipsize="end" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="11sp" android:autoSizeMaxTextSize="14sp" android:autoSizeStepGranularity="1sp" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginStart="2dp"/></LinearLayout>
+<LinearLayout android:id="@+id/widget_session_actions" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:orientation="horizontal" android:visibility="gone">
+<Button android:id="@+id/widget_interruption" android:backgroundTint="@null" android:background="@drawable/widget_interruption_button" android:text="Interruption" android:textColor="#24232C" android:textSize="13sp" android:textAllCaps="false" android:padding="0dp" android:minWidth="0dp" android:minHeight="0dp" android:maxLines="2" android:ellipsize="end" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="11sp" android:autoSizeMaxTextSize="14sp" android:autoSizeStepGranularity="1sp" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="2" android:layout_marginEnd="2dp"/><Button android:id="@+id/widget_change_baby" android:backgroundTint="@null" android:background="@drawable/widget_baby_button" android:text="Change baby" android:textColor="#24232C" android:textSize="13sp" android:textAllCaps="false" android:padding="0dp" android:minWidth="0dp" android:minHeight="0dp" android:maxLines="2" android:ellipsize="end" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="11sp" android:autoSizeMaxTextSize="14sp" android:autoSizeStepGranularity="1sp" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="2" android:layout_marginEnd="2dp" android:visibility="gone"/><Button android:id="@+id/widget_end" android:backgroundTint="@null" android:background="@drawable/widget_neutral_button" android:text="End" android:textColor="#24232C" android:textSize="13sp" android:textAllCaps="false" android:padding="0dp" android:minWidth="0dp" android:minHeight="0dp" android:maxLines="2" android:ellipsize="end" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="11sp" android:autoSizeMaxTextSize="14sp" android:autoSizeStepGranularity="1sp" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginStart="2dp"/></LinearLayout>
+</LinearLayout>
+<include layout="@layout/relay_widget_picker"/>
 </LinearLayout>
