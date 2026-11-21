@@ -26,6 +26,15 @@ class MainActivity : FlutterActivity() {
         ).also { channel -> channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "context" -> result.success(RelayWidgetProvider.currentContext(this))
+                "timerNotificationSettings" -> {
+                    RelayWidgetProvider.refreshAll(this)
+                    result.success(RelayTimerNotification.settings(this))
+                }
+                "setTimerNotificationEnabled" -> {
+                    val enabled = call.arguments as? Boolean
+                    if (enabled == null) result.error("invalid_setting", "A boolean is required", null)
+                    else result.success(RelayTimerNotification.setEnabled(this, enabled))
+                }
                 "update" -> {
                     val snapshot = call.arguments as? Map<*, *>
                     if (snapshot == null) {
@@ -34,8 +43,13 @@ class MainActivity : FlutterActivity() {
                         RelayWidgetProvider.updateSnapshot(
                             this, snapshot.entries.associate { it.key.toString() to it.value }
                         )
+                        RelayCloudSyncWorker.enqueueIfNeeded(this)
                         result.success(null)
                     }
+                }
+                "requestCloudSync" -> {
+                    RelayCloudSyncWorker.enqueueIfNeeded(this)
+                    result.success(null)
                 }
                 "clear" -> {
                     RelayWidgetProvider.clear(this)
@@ -49,6 +63,12 @@ class MainActivity : FlutterActivity() {
                 IntentFilter("app.relay.relay.widget.STATE_CHANGED"), ContextCompat.RECEIVER_NOT_EXPORTED)
             receiverRegistered = true
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Permission/channel settings may have changed while Android Settings was open.
+        RelayWidgetProvider.refreshAll(this)
     }
 
     override fun onDestroy() {

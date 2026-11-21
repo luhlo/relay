@@ -2,6 +2,59 @@
 
 Audit date: 2026-11-01. Audit source: app code and declared dependencies. No production users were read. Final declarations must cover provider-side processing and all active Play versions too.
 
+## Prepared 1.18.0 offline additions (November 19, 2026)
+
+Signed-in records now have an account-keyed local SQLite/IndexedDB cache and a
+durable outbox. Timers, interruptions and schedules commit locally before network
+sync. Native background work requires a network; the web retries while open or
+on reopen. Conflicts retain both versions locally for explicit user review.
+These are the same disclosed household/time records, not a new analytics flow.
+The server retains mutation UUID/hash/revision receipts for up to 90 days to
+prevent duplicate writes; receipts are private and deleted with the owned records.
+Signing out retains local pending data for the same account. Confirmed deletion
+clears that account's cache on the device completing deletion; separately cached
+copies on other devices require clearing local app/site storage.
+
+The app-shell service worker caches public executable/assets only, never Auth,
+RPC, feedback or account API responses. The separately stored IndexedDB data is
+account-scoped. Testers should test online setup, offline actions, restart and
+reconnect, lost acknowledgements, and two-device conflict review.
+
+## Prepared 1.17.0 additions (November 19, 2026)
+
+These additions are prepared locally and the additive support backend is deployed;
+they are not yet part of the Play-distributed 1.15.2 build. Update the public
+privacy policy and Play Data safety answers before releasing this new build.
+
+- Optional **Crash logs** and **Diagnostics**: allowlisted Flutter error class,
+  Relay source locations, slow-operation/frame duration, version/platform and
+  technical fingerprint. No raw exception messages, family records, user IDs or
+  device installation IDs. Collection is off by default and user-controlled;
+  stored reports are non-ephemeral, retained for 90 days with daily cleanup.
+- Google's **Analytics** collection purpose explicitly includes app-health
+  monitoring and diagnosing bugs/crashes. Use that purpose for technical reports
+  even though Relay does not collect the feature-usage analytics in suggestion11.
+- Optional **Other user-generated content**: the feedback message and category,
+  retained for 180 days. Optional **Email address**: only the reply address entered
+  in the feedback form; support data is not linked to an Auth user ID. Evaluate
+  App functionality and Developer communications for feedback/support replies.
+- Supabase is the service provider for private reports. A short-lived IP HMAC is
+  used only for abuse prevention and expires with rate-limit buckets; raw IPs are
+  not saved in report tables. Continue accounting for provider request logs.
+- Only the confirmed, server-authorized support email can read reports through
+  the Edge Function. All four support tables revoke anon/authenticated privileges,
+  enable RLS, and expose no client read policy.
+- The sharing feature opens the OS/browser share sheet with Relay's public URL
+  and generic text. No household record or contacts are sent by that feature.
+- Appearance, introduction completion and the seen-feature-release ID are local
+  preferences. What's new is local UI, not remote push messaging or a recurring
+  timer, and does not generate an engagement event.
+
+Reference: https://support.google.com/googleplay/android-developer/answer/10787469?hl=en
+defines Diagnostics and includes app-health monitoring in the Analytics purpose.
+The earlier audit notes below describe the 1.15.2 shipped behavior, not these new
+optional flows.
+
 ## Confirmed app data flows
 
 | Information | Where and why | Suggested Play form category |

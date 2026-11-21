@@ -9,10 +9,14 @@ The Flutter app targets Android and the web. Supabase provides authentication an
 ```sh
 flutter analyze
 flutter test
-flutter build web --release --base-href /
+flutter build web --release --base-href / --pwa-strategy=none
+python3 tool/finish_web_build.py
+node tool/test_service_worker.mjs build/web
 ```
 
 Pushing `main` runs the Pages workflow and deploys the PWA.
+The finish step validates every precached file and retains the legacy Flutter
+service-worker URL so installed PWAs can migrate to Relay's offline shell safely.
 
 ## Android home-screen widget
 
@@ -30,8 +34,22 @@ uses equal colored sections, with the timer centered above End and Interruption
 or Resume. Baby Time shows one child's name alone; two or three children share
 equal sections with All babies. For four or more children, use the wider arrows
 to choose a child or All babies, then tap that choice to start Baby Time.
-Signed-in tracking needs a connection; local tracking works offline. Cloud changes from another device appear
-after refreshing Relay; the widget shows the most recently loaded device state.
+Signed-in timers and schedules save on the device immediately and work offline
+after the account and household have been loaded online once. Android queues
+network-constrained background sync after local widget and lock-screen actions;
+the foreground app retries on resume and periodically. The PWA retries while
+open or when reopened. A status row shows local, pending, synced and review states.
+Disjoint changes merge; competing edits require a choice in **Sync & saved copies**,
+with both versions retained on that device. No pending history is uploaded to a
+different account or household. Signing in, joining/inviting caregivers and shared
+household settings still require a connection.
+
+The web app caches its public app shell and renderer after a successful online
+visit. Browser storage must remain available. Signing out retains pending records
+privately for the same account; signing back in reconnects them. Clearing app/site
+storage removes unsynced changes and saved copies. Confirmed account deletion
+clears that account's cache on the device completing deletion; clear storage on
+other devices separately. The cloud never receives recovery copies themselves.
 The browser-installed PWA does not include the native Android widget.
 
 ### Widget appearance and timer check-ins
@@ -51,7 +69,37 @@ and notify the user why the timer stopped.
 In Settings, enable **Check-in notifications** and **Allow precise timer alerts**.
 If exact alarms are not allowed, Android may defer alerts; stored stop deadlines
 still bound recorded time when the job or app next runs. Cloud tracking and
-guard saves require a connection, as with other cloud writes.
+guard saves commit locally while offline and sync when connected.
+
+## Appearance, help, and release announcements (1.17.0)
+
+Open Settings → **App preferences & help** for Light, Dark, or Follow System
+appearance; Help & FAQ; Replay introduction; What's new; Rate Relay; Share Relay;
+and Send feedback. Password fields can reveal the typed password, and signing
+out asks for confirmation. The native lock-screen timer remains available.
+
+New installations receive a short skippable introduction. Existing users receive
+one small **What's new** notice for a feature release, with a View button. This
+uses `relayFeatureReleaseId` in `lib/release_notes.dart`, not a calendar schedule:
+change that ID and the notes only when there is something new to announce.
+Patch builds with the same ID do not repeat the notice. The notes can always be
+opened again from Settings, and Android-only features are omitted on the web.
+When preparing a build, keep `relaySupportVersion` in `lib/support_service.dart`
+aligned with `pubspec.yaml` so technical reports identify the installed build.
+Update `relayFeatureReleaseVersion` only with the corresponding feature notes.
+
+**Help improve reliability** is opt-in and off by default. Only sanitized
+Flutter errors and unusually slow startup, record operations, or frames are
+reported. Exception messages, names, records, account identifiers and full URLs
+are excluded. Reports are bounded and queued without delaying timer saves.
+This is technical monitoring, not feature-usage analytics; it does not capture
+Android OS-level Java crashes or ANRs.
+
+Feedback and technical reports use the `relay-support` Supabase function. The
+private **Support dashboard** appears only for a server-authorized, confirmed
+support login, initially `luhlostudios@gmail.com`. The server checks authorization
+on every dashboard request. See `supabase/functions/relay-support/README.md`
+for backend deployment, limits, retention and verification.
 
 ## Branding
 

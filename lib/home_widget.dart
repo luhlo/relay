@@ -34,16 +34,44 @@ class RelayHomeWidget {
     return _channel.invokeMethod<String>('context');
   }
 
-  Future<void> sync(RelayState state, String context, DateTime now) async {
+  Future<void> sync(
+    RelayState state,
+    String context,
+    DateTime now, {
+    bool? syncPending,
+    bool? syncBlocked,
+  }) async {
     if (!supported) return;
-    await _channel.invokeMethod<void>(
-      'update',
-      widgetSnapshot(state, context, now),
-    );
+    await _channel.invokeMethod<void>('update', {
+      ...widgetSnapshot(state, context, now),
+      'syncPending': ?syncPending,
+      'syncBlocked': ?syncBlocked,
+    });
+  }
+
+  Future<void> requestCloudSync() async {
+    if (supported) await _channel.invokeMethod<void>('requestCloudSync');
   }
 
   Future<void> clear() async {
     if (supported) await _channel.invokeMethod<void>('clear');
+  }
+
+  Future<Map<String, dynamic>> timerNotificationSettings() async {
+    if (!supported) return const {'enabled': false};
+    return await _channel.invokeMapMethod<String, dynamic>(
+          'timerNotificationSettings',
+        ) ??
+        const {'enabled': true};
+  }
+
+  Future<Map<String, dynamic>> setTimerNotificationEnabled(bool enabled) async {
+    if (!supported) return const {'enabled': false};
+    return await _channel.invokeMapMethod<String, dynamic>(
+          'setTimerNotificationEnabled',
+          enabled,
+        ) ??
+        {'enabled': enabled};
   }
 }
 

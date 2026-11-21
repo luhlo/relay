@@ -15,6 +15,49 @@ import 'widget_appearance.dart';
 import 'timer_guard.dart';
 import 'timer_guard_settings.dart';
 import 'account_privacy.dart';
+import 'experience.dart';
+import 'account_cache.dart';
+
+Future<bool> confirmRelayLogout(BuildContext context) async =>
+    await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Log out?'),
+        content: const Text(
+          'Are you sure you want to log out of Relay on this device? '
+          'Changes waiting to sync stay privately on this device. Sign in with '
+          'the same account again to finish syncing them.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Log out'),
+          ),
+        ],
+      ),
+    ) ??
+    false;
+
+class RelayAppPreferencesButton extends StatelessWidget {
+  const RelayAppPreferencesButton({super.key, this.enabled = true});
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) => OutlinedButton.icon(
+    onPressed: !enabled
+        ? null
+        : () => Navigator.push<void>(
+            context,
+            MaterialPageRoute(builder: (_) => const RelayExperienceSettings()),
+          ),
+    icon: const Icon(Icons.tune_rounded),
+    label: const Text('App preferences & help'),
+  );
+}
 
 String get authRedirect => kIsWeb
     ? '${Uri.base.origin}${Uri.base.path}${accountDeletionRequested(Uri.base) ? '?action=delete-account' : ''}'
@@ -38,16 +81,39 @@ String personalTimeAgreement(int hours) {
       'If one person needs more than $duration on a particular day, the other person receives one additional hour in their time bank. That free hour can be used whenever they choose.';
 }
 
+Future<void> clearDeletedAccountCopies(String userId) async {
+  // This is called only after the deletion backend has acknowledged success.
+  // Ordinary logout deliberately retains the owner's unsynced private copy.
+  await Future.wait([
+    CloudStore.clearCachedRecords(userId),
+    const AccountContextCache().remove(userId),
+  ]);
+}
+
 class AccountGate extends StatefulWidget {
-  const AccountGate({super.key});
+  const AccountGate({super.key, this.client, this.createStore});
+  final SupabaseClient? client;
+  final CloudStore Function(
+    SupabaseClient client,
+    String userId,
+    List<String> names,
+    String householdId,
+  )?
+  createStore;
   @override
   State<AccountGate> createState() => _AccountGateState();
 }
 
-class _AccountGateState extends State<AccountGate> {
-  final client = Supabase.instance.client;
+class _AccountGateState extends State<AccountGate> with WidgetsBindingObserver {
+  late final client = widget.client ?? Supabase.instance.client;
   final localStore = RelayStore();
+  final contextCache = const AccountContextCache();
   StreamSubscription<AuthState>? subscription;
+  Timer? contextRetry;
+  bool foreground = true;
+  bool refreshingContext = false;
+  int refreshGeneration = 0;
+  int cloudRevision = 0;
   Map<String, dynamic>? member, household;
   CloudStore? store;
   bool local = false, loading = true, recovery = false;
@@ -58,29 +124,104 @@ class _AccountGateState extends State<AccountGate> {
   @override
   void initState() {
     super.initState();
-    subscription = client.auth.onAuthStateChange.listen((event) {
-      if (event.event == AuthChangeEvent.passwordRecovery) {
-        setState(() => recovery = true);
+    WidgetsBinding.instance.addObserver(this);
+    subscription = client.auth.onAuthStateChange.listen(
+      (event) {
+        if (!mounted) return;
+        if (event.event == AuthChangeEvent.passwordRecovery) {
+          setState(() => recovery = true);
+        }
+        if (event.session?.user.id != loadedUser) {
+          refresh();
+        } else if (event.event == AuthChangeEvent.tokenRefreshed) {
+          refresh(showLoading: false);
+        }
+      },
+      onError: (Object _) {
+        // An offline token refresh must not hide this account's cached records.
+      },
+    );
+    contextRetry = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (foreground && !refreshingContext && client.auth.currentUser != null) {
+        refresh(showLoading: false);
       }
-      if (event.session?.user.id != loadedUser) refresh();
     });
     refresh();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    foreground = state == AppLifecycleState.resumed;
+    if (foreground && !refreshingContext && client.auth.currentUser != null) {
+      refresh(showLoading: false);
+    }
+  }
+
+  @override
   void dispose() {
     subscription?.cancel();
+    contextRetry?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  Future<void> refresh() async {
+  bool _isCurrent(String? uid, int generation) =>
+      mounted &&
+      generation == refreshGeneration &&
+      client.auth.currentUser?.id == uid;
+
+  Future<void> _clearUnavailableWidget() async {
+    try {
+      await RelayHomeWidget.instance.clear().timeout(
+        const Duration(seconds: 2),
+      );
+    } catch (_) {
+      // A native bridge failure cannot restore access the server denied.
+    }
+  }
+
+  void _useContext(CachedAccountContext cached) {
+    final names = householdChildren(cached.household);
+    final sameHousehold =
+        store?.userId == cached.userId &&
+        household?['id'] == cached.household['id'];
+    final namesChanged =
+        household == null ||
+        householdChildren(household!).join('\u0000') != names.join('\u0000');
+    member = cached.member;
+    household = cached.household;
+    if (sameHousehold) {
+      store!.childNames
+        ..clear()
+        ..addAll(names);
+    } else {
+      final householdId = cached.household['id'] as String;
+      store =
+          widget.createStore?.call(client, cached.userId, names, householdId) ??
+          CloudStore(client, cached.userId, names, householdId: householdId);
+    }
+    if (!sameHousehold || namesChanged) cloudRevision++;
+    error = null;
+    loading = false;
+  }
+
+  Future<void> refresh({bool showLoading = true}) async {
     final uid = client.auth.currentUser?.id;
+    if (!showLoading && refreshingContext) return;
+    final generation = ++refreshGeneration;
+    final sameAccount = uid != null && loadedUser == uid && store != null;
+    refreshingContext = true;
     setState(() {
-      loading = true;
+      loading = !sameAccount;
       error = null;
-      member = null;
-      household = null;
-      store = null;
+      // An explicit Settings return reloads changes saved by its subpages.
+      // Quiet metadata retries keep the active timer screen mounted.
+      if (sameAccount && showLoading) cloudRevision++;
+      if (!sameAccount) {
+        member = null;
+        household = null;
+        store = null;
+      }
       loadedUser = uid;
     });
     try {
@@ -88,32 +229,80 @@ class _AccountGateState extends State<AccountGate> {
         if (await RelayHomeWidget.instance.currentContext() == 'local') {
           local = true;
         } else if (!local) {
-          await RelayHomeWidget.instance.clear();
+          await _clearUnavailableWidget();
         }
       }
       if (uid != null) {
-        final row = await client
-            .from('household_members')
-            .select()
-            .eq('user_id', uid)
-            .maybeSingle();
-        if (row != null) {
-          final home = await client
-              .from('households')
-              .select()
-              .eq('id', row['household_id'])
-              .single();
-          if (!mounted || client.auth.currentUser?.id != uid) return;
-          member = row;
-          household = home;
-          store = CloudStore(client, uid, householdChildren(home));
+        if (!sameAccount) {
+          CachedAccountContext? cached;
+          try {
+            cached = await contextCache.load(uid);
+          } catch (_) {
+            // Fresh online metadata can still recover an unavailable cache.
+          }
+          if (!_isCurrent(uid, generation)) return;
+          final cachedContext = cached;
+          if (cachedContext != null) {
+            setState(() => _useContext(cachedContext));
+          }
+        }
+        final fresh = await fetchAccountContext(client, uid);
+        if (!_isCurrent(uid, generation)) return;
+        if (fresh == null) {
+          final wasCached = member != null;
+          try {
+            await contextCache.remove(uid);
+          } catch (_) {
+            // Keep the access decision in memory even if device storage fails.
+          }
+          if (!_isCurrent(uid, generation)) return;
+          member = null;
+          household = null;
+          store = null;
+          await _clearUnavailableWidget();
+          if (wasCached) {
+            error =
+                'Your household membership is no longer available. '
+                'Any changes waiting to sync remain on this device. '
+                'Reconnect or sign in again before joining another household.';
+          }
+        } else {
+          // Use the verified context even if the optional metadata cache fails.
+          setState(() => _useContext(fresh));
+          try {
+            await contextCache.save(fresh);
+          } catch (_) {
+            // Existing cached records remain usable; a later refresh retries.
+          }
         }
       }
-    } catch (_) {
-      error =
-          'Could not load your household. Check your connection and try again.';
+    } catch (failure) {
+      if (!_isCurrent(uid, generation)) return;
+      if (failure is AccountMembershipUnavailable) {
+        try {
+          if (uid != null) await contextCache.remove(uid);
+        } catch (_) {
+          // A storage failure must not restore a membership the server denied.
+        }
+        member = null;
+        household = null;
+        store = null;
+        await _clearUnavailableWidget();
+        error =
+            'Your household is no longer available. '
+            'Your unsynced records remain on this device. Reconnect to review your account.';
+      } else if (accountContextRequiresSignIn(failure)) {
+        error =
+            'Sign in again to reconnect your account. '
+            'Your changes waiting to sync remain on this device.';
+      } else if (store == null) {
+        error =
+            'Connect to the internet and open this account once to prepare '
+            'it for offline tracking. Your saved records have not been replaced.';
+      }
     }
-    if (mounted && client.auth.currentUser?.id == uid) {
+    if (_isCurrent(uid, generation)) {
+      refreshingContext = false;
       setState(() => loading = false);
       if (uid != null && deletionRequested) {
         deletionRequested = false;
@@ -124,15 +313,26 @@ class _AccountGateState extends State<AccountGate> {
     }
   }
 
-  Future<void> openAccountDeletion() => Navigator.push<void>(
-    context,
-    MaterialPageRoute(
-      builder: (pageContext) => AccountDeletionPage(
-        onDeleted: signOut,
-        onDone: () => Navigator.pop(pageContext),
+  Future<void> openAccountDeletion() {
+    final deletedUser = client.auth.currentUser?.id;
+    return Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (pageContext) => AccountDeletionPage(
+          onDeleted: () async {
+            try {
+              if (deletedUser != null) {
+                await clearDeletedAccountCopies(deletedUser);
+              }
+            } finally {
+              await signOut();
+            }
+          },
+          onDone: () => Navigator.pop(pageContext),
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   Future<void> signOut() async {
     // Local sign-out also works offline and clears the saved Supabase session.
@@ -215,7 +415,14 @@ class _AccountGateState extends State<AccountGate> {
       return Scaffold(
         appBar: AppBar(
           actions: [
-            TextButton(onPressed: signOut, child: const Text('Sign out')),
+            TextButton(
+              onPressed: () async {
+                if (await confirmRelayLogout(context) && mounted) {
+                  await signOut();
+                }
+              },
+              child: const Text('Log out'),
+            ),
           ],
         ),
         body: FormPage(
@@ -236,7 +443,7 @@ class _AccountGateState extends State<AccountGate> {
       );
     }
     return RelayHome(
-      key: ObjectKey(store),
+      key: ValueKey('cloud:$loadedUser:$cloudRevision'),
       store: store,
       onMenu: openHousehold,
     );
@@ -318,7 +525,7 @@ class _LocalAccountSettingsState extends State<LocalAccountSettings> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Account & family')),
+    appBar: AppBar(title: const Text('Settings')),
     body: FormPage(
       title: 'This device',
       children: [
@@ -393,6 +600,7 @@ class _LocalAccountSettingsState extends State<LocalAccountSettings> {
         ),
         const Divider(),
         const TimerGuardSettings(responseMinutes: timerGuardResponseMinutes),
+        RelayAppPreferencesButton(enabled: !busy),
         OutlinedButton.icon(
           onPressed: busy
               ? null
@@ -464,7 +672,7 @@ class AuthForm extends StatefulWidget {
 
 class _AuthFormState extends State<AuthForm> {
   final email = TextEditingController(), password = TextEditingController();
-  bool create = false, busy = false;
+  bool create = false, busy = false, passwordVisible = false;
   String? message;
   @override
   void dispose() {
@@ -589,14 +797,23 @@ class _AuthFormState extends State<AuthForm> {
         ),
         TextField(
           controller: password,
-          obscureText: true,
+          obscureText: !passwordVisible,
           enableSuggestions: false,
           autocorrect: false,
           autofillHints: [
             create ? AutofillHints.newPassword : AutofillHints.password,
           ],
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             labelText: 'Password (8+ characters)',
+            suffixIcon: IconButton(
+              tooltip: passwordVisible ? 'Hide password' : 'Show password',
+              isSelected: passwordVisible,
+              icon: const Icon(Icons.visibility_off_outlined),
+              selectedIcon: const Icon(Icons.visibility_outlined),
+              onPressed: busy
+                  ? null
+                  : () => setState(() => passwordVisible = !passwordVisible),
+            ),
           ),
         ),
         if (message != null) Text(message!, semanticsLabel: message),
@@ -615,6 +832,7 @@ class _AuthFormState extends State<AuthForm> {
               ? null
               : () => setState(() {
                   create = !create;
+                  passwordVisible = false;
                   message = null;
                 }),
           child: Text(
@@ -735,7 +953,7 @@ class _HouseholdSetupState extends State<HouseholdSetup> {
         }
         if (failedInvites.isNotEmpty) {
           inviteWarning =
-              'Could not create a code for ${failedInvites.join(', ')}. You can add them later from Household.';
+              'Could not create a code for ${failedInvites.join(', ')}. You can add them later from Settings.';
         }
         if (createdInvites.isEmpty) {
           await widget.onDone();
@@ -783,8 +1001,14 @@ class _HouseholdSetupState extends State<HouseholdSetup> {
             child: const Text('Delete account'),
           ),
         TextButton(
-          onPressed: busy ? null : widget.onSignOut,
-          child: const Text('Sign out'),
+          onPressed: busy
+              ? null
+              : () async {
+                  if (await confirmRelayLogout(context) && mounted) {
+                    await widget.onSignOut();
+                  }
+                },
+          child: const Text('Log out'),
         ),
       ],
     ),
@@ -867,7 +1091,7 @@ class _HouseholdSetupState extends State<HouseholdSetup> {
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
                 const Text(
-                  'You count as one. Add relatives, partners, nannies, or other caregivers now, or add them later from Household.',
+                  'You count as one. Add relatives, partners, nannies, or other caregivers now, or add them later from Settings.',
                 ),
                 for (final entry in inviteEmails.indexed)
                   Card(
@@ -999,6 +1223,10 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
   @override
   void initState() {
     super.initState();
+    members = [widget.member];
+    if (widget.member['role'] == 'owner') {
+      loadPersonalTimeSettings(widget.store.userId);
+    }
     loadMembers();
   }
 
@@ -1037,18 +1265,18 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
       state.personalTimeEnabled = personalTimeEnabled;
       state.dailyPersonalHours = dailyPersonalHours;
       await agreementStore.save(state);
-      message = 'Personal-time agreement updated for your household.';
+      message = agreementStore.syncStatus.value.pending
+          ? 'Personal-time agreement saved on this device. It will be shared after syncing.'
+          : 'Personal-time agreement updated for your household.';
     });
   }
 
   Future<void> loadPersonalTimeSettings(String ownerId) async {
     try {
-      final agreementStore = CloudStore(
-        Supabase.instance.client,
-        ownerId,
-        householdChildren(widget.household),
-      );
-      final state = await agreementStore.load();
+      final agreementStore = ownerId == widget.store.userId
+          ? widget.store
+          : null;
+      final state = await readFamilyMemberRecords(ownerId);
       if (!mounted) return;
       setState(() {
         personalTimeStore = agreementStore;
@@ -1071,13 +1299,16 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
       final rows = await Supabase.instance.client
           .from('household_members')
           .select()
-          .eq('household_id', widget.household['id']);
+          .eq('household_id', widget.household['id'])
+          .timeout(const Duration(seconds: 8));
       final owner = rows.cast<Map<String, dynamic>>().where(
         (row) => row['role'] == 'owner',
       );
       if (mounted) setState(() => members = rows);
       if (owner.isNotEmpty) {
-        await loadPersonalTimeSettings(owner.first['user_id'] as String);
+        if (widget.member['role'] != 'owner' || loadingPersonalTime) {
+          await loadPersonalTimeSettings(owner.first['user_id'] as String);
+        }
       } else if (mounted) {
         setState(() {
           loadingPersonalTime = false;
@@ -1086,12 +1317,29 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
       }
     } catch (_) {
       if (mounted) {
-        setState(
-          () => message =
-              'Could not load family members. Reopen this page to retry.',
-        );
+        setState(() {
+          loadingPersonalTime = false;
+          message = 'Family membership changes and other members’ Insights need a connection. Your own tracking stays available.';
+        });
       }
     }
+  }
+
+  Future<RelayState> readFamilyMemberRecords(String userId) async {
+    if (userId == widget.store.userId) return widget.store.load();
+    // Shared household views are read-only and online-only. They must never
+    // populate another person's private offline cache on this account.
+    final row = await Supabase.instance.client
+        .from('parent_records')
+        .select('payload')
+        .eq('user_id', userId)
+        .single()
+        .timeout(const Duration(seconds: 8));
+    final state = RelayState.fromJson(
+      Map<String, dynamic>.from(row['payload'] as Map),
+    );
+    state.childNames = householdChildren(widget.household);
+    return state;
   }
 
   Future<void> run(Future<void> Function() action) async {
@@ -1146,12 +1394,14 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
     if (approved != true) return;
     local.childNames = householdChildren(widget.household);
     await widget.store.save(local);
-    message = 'Device history copied to your account. Your original device records are unchanged.';
+    message = widget.store.syncStatus.value.pending
+        ? 'Device history saved to this account on this device and waiting to sync. Your original device records are unchanged.'
+        : 'Device history copied to your account. Your original device records are unchanged.';
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Household')),
+    appBar: AppBar(title: const Text('Settings')),
     body: FormPage(
       title: widget.household['name'],
       children: [
@@ -1171,9 +1421,10 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
         ],
         Text(householdChildren(widget.household).join(' · ')),
         const Text(
-          'Cloud changes require a connection. Use Refresh to load changes made on another device.',
+          'Timers and schedules save on this device first and sync when connected. Shared household and account changes require a connection. Use Refresh to check for changes from another device.',
         ),
         const TimerGuardSettings(responseMinutes: timerGuardResponseMinutes),
+        RelayAppPreferencesButton(enabled: !busy),
         OutlinedButton.icon(
           onPressed: busy
               ? null
@@ -1237,11 +1488,9 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
             onPressed: busy
                 ? null
                 : () => run(() async {
-                    final records = await CloudStore(
-                      Supabase.instance.client,
-                      member['user_id'],
-                      householdChildren(widget.household),
-                    ).load();
+                    final records = await readFamilyMemberRecords(
+                      member['user_id'] as String,
+                    );
                     if (!context.mounted) return;
                     await Navigator.push(
                       context,
@@ -1317,10 +1566,13 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
           onPressed: busy
               ? null
               : () async {
+                  if (!await confirmRelayLogout(context) || !context.mounted) {
+                    return;
+                  }
                   await widget.onSignOut();
                   if (context.mounted) Navigator.pop(context);
                 },
-          child: const Text('Sign out'),
+          child: const Text('Log out'),
         ),
         PrivacyAndAccountActions(
           onDeleteAccount: busy
@@ -1329,7 +1581,13 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
                   context,
                   MaterialPageRoute(
                     builder: (pageContext) => AccountDeletionPage(
-                      onDeleted: widget.onSignOut,
+                      onDeleted: () async {
+                        try {
+                          await clearDeletedAccountCopies(widget.store.userId);
+                        } finally {
+                          await widget.onSignOut();
+                        }
+                      },
                       onDone: () {
                         Navigator.pop(pageContext);
                         if (context.mounted) Navigator.pop(context);
@@ -1352,7 +1610,7 @@ class PasswordRecovery extends StatefulWidget {
 
 class _PasswordRecoveryState extends State<PasswordRecovery> {
   final password = TextEditingController();
-  bool busy = false;
+  bool busy = false, passwordVisible = false;
   String? message;
   @override
   void dispose() {
@@ -1367,9 +1625,21 @@ class _PasswordRecoveryState extends State<PasswordRecovery> {
       children: [
         TextField(
           controller: password,
-          obscureText: true,
-          decoration: const InputDecoration(
+          obscureText: !passwordVisible,
+          enableSuggestions: false,
+          autocorrect: false,
+          autofillHints: const [AutofillHints.newPassword],
+          decoration: InputDecoration(
             labelText: 'New password (8+ characters)',
+            suffixIcon: IconButton(
+              tooltip: passwordVisible ? 'Hide password' : 'Show password',
+              isSelected: passwordVisible,
+              icon: const Icon(Icons.visibility_off_outlined),
+              selectedIcon: const Icon(Icons.visibility_outlined),
+              onPressed: busy
+                  ? null
+                  : () => setState(() => passwordVisible = !passwordVisible),
+            ),
           ),
         ),
         if (message != null) Text(message!),

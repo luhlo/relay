@@ -21,6 +21,10 @@ import org.json.JSONObject
 import java.util.UUID
 import kotlin.math.max
 
+data class RelayCloudSyncState(
+    val source: String?, val pending: Boolean, val blocked: Boolean, val generation: Long,
+)
+
 /** The launcher only displays a snapshot. All tracking writes happen in Flutter. */
 open class RelayWidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) = refreshAll(context)
@@ -194,6 +198,23 @@ open class RelayWidgetProvider : AppWidgetProvider() {
                 val suppliedColors = snapshot["colors"] as? Map<*, *>
                 val suppliedVersion = (suppliedColors?.get("version") as? Number)?.toInt() ?: 0
                 val sameSource = prefs.getString("context", null) == source
+                if (!sameSource) RelayCloudSyncWorker.cancel(context, prefs.getString("context", null))
+                val incomingPending = snapshot["syncPending"] as? Boolean
+                val incomingBlocked = snapshot["syncBlocked"] as? Boolean
+                if (!sameSource) {
+                    edit.putLong("cloudSyncGeneration", prefs.getLong("cloudSyncGeneration", 0L) + 1L)
+                        .putBoolean("cloudSyncPending", source.startsWith("cloud:") && incomingPending == true)
+                        .putBoolean("cloudSyncBlocked", source.startsWith("cloud:") && incomingBlocked == true)
+                } else if (source.startsWith("cloud:")) {
+                    if (incomingPending == true) {
+                        edit.putLong("cloudSyncGeneration", prefs.getLong("cloudSyncGeneration", 0L) + 1L)
+                            .putBoolean("cloudSyncPending", true)
+                    }
+                    // A false snapshot could have read the cache immediately
+                    // before a newer widget save. Only a generation-checked
+                    // network completion can clear an existing pending signal.
+                    if (incomingBlocked != null) edit.putBoolean("cloudSyncBlocked", incomingBlocked)
+                }
                 val legacyDefaults = suppliedColors != null &&
                     suppliedVersion < 2 &&
                     !suppliedColors.containsKey("text") &&
@@ -254,6 +275,47 @@ open class RelayWidgetProvider : AppWidgetProvider() {
         fun currentContext(context: Context): String? = preferences(context).getString("context", null)
 
         @JvmStatic
+        fun cloudSyncState(context: Context): RelayCloudSyncState = synchronized(widgetLock) {
+            val prefs = preferences(context)
+            RelayCloudSyncState(
+                prefs.getString("context", null),
+                prefs.getBoolean("cloudSyncPending", false),
+                prefs.getBoolean("cloudSyncBlocked", false),
+                prefs.getLong("cloudSyncGeneration", 0L),
+            )
+        }
+
+        @JvmStatic
+        fun completeCloudSync(
+            context: Context, expectedContext: String, expectedGeneration: Long,
+            pending: Boolean, blocked: Boolean, deferred: Boolean = false,
+        ): Boolean = synchronized(widgetLock) {
+            val prefs = preferences(context)
+            if (prefs.getString("context", null) != expectedContext ||
+                prefs.getLong("cloudSyncGeneration", 0L) != expectedGeneration) return false
+            val message = when {
+                pending && blocked -> "Saved on this device. Open Relay to review sync."
+                pending && deferred -> "Saved on this device. Open Relay to finish syncing."
+                else -> null
+            }
+            prefs.edit().apply {
+                putBoolean("cloudSyncPending", pending)
+                putBoolean("cloudSyncBlocked", pending && blocked)
+                if (!hasOutstanding(prefs)) {
+                    if (message != null) putString("message", message)
+                    else if (!pending && prefs.getString("message", "") in setOf(
+                            "Saved on this device. Waiting to sync.",
+                            "Saved on this device. Open Relay to review syncing.",
+                            "Saved on this device. Open Relay to review sync.",
+                            "Saved on this device. Open Relay to finish syncing.",
+                        )) putString("message", "")
+                }
+            }.commit()
+            refreshAll(context)
+            true
+        }
+
+        @JvmStatic
         fun markPending(context: Context, expectedContext: String, requestId: String): Boolean {
             synchronized(widgetLock) {
                 val prefs = preferences(context)
@@ -297,9 +359,12 @@ open class RelayWidgetProvider : AppWidgetProvider() {
         @JvmStatic
         fun clear(context: Context) {
             synchronized(widgetLock) {
+                val prefs = preferences(context)
+                val generation = prefs.getLong("cloudSyncGeneration", 0L) + 1L
+                RelayCloudSyncWorker.cancel(context, prefs.getString("context", null))
                 for ((key, value) in preferences(context).all) if (key.startsWith("slot:") && value is String) cancelCapability(context, key, value)
                 RelayTimerGuard.clear(context)
-                preferences(context).edit().clear().commit()
+                prefs.edit().clear().putLong("cloudSyncGeneration", generation).commit()
                 refreshAll(context)
             }
         }
@@ -342,7 +407,58 @@ open class RelayWidgetProvider : AppWidgetProvider() {
                     val ids = manager.getAppWidgetIds(ComponentName(context, provider))
                     for (id in ids) manager.updateAppWidget(id, views(context, id))
                 }
+                // Notifications must also work when no home-screen widget is installed.
+                syncTimerNotification(context)
             }
+        }
+
+        private fun syncTimerNotification(context: Context) {
+            val prefs = preferences(context)
+            val status = prefs.getString("status", "idle").orEmpty()
+            val running = prefs.getBoolean("running", false)
+            val elapsed = prefs.getLong("elapsedSeconds", 0) + if (running) {
+                max(0L, (System.currentTimeMillis() - prefs.getLong("savedAt", System.currentTimeMillis())) / 1000L)
+            } else 0L
+            RelayTimerNotification.sync(context, RelayTimerNotification.State(
+                status = status,
+                label = timerLabel(status, prefs.getString("timerLabel", null), prefs.getString("subtitle", "").orEmpty()),
+                elapsedSeconds = elapsed,
+                running = running,
+                configured = !prefs.getString("context", "").isNullOrBlank() && !prefs.getString("sessionStart", "").isNullOrBlank(),
+                pending = hasPending(prefs),
+                needsRefresh = prefs.getBoolean("needsRefresh", false),
+                message = prefs.getString("message", "").orEmpty(),
+                source = prefs.getString("context", "").orEmpty(),
+                sessionStart = prefs.getString("sessionStart", null),
+            ), action = { action -> track(context, RelayTimerNotification.ACTION_SLOT, action) },
+                openApp = { openApp(context, RelayTimerNotification.ACTION_SLOT) },
+                revokeActions = { revokeActionSlot(context, RelayTimerNotification.ACTION_SLOT) })
+        }
+
+        @JvmStatic
+        fun setTimerNotificationEnabled(context: Context, enabled: Boolean): Map<String, Boolean> {
+            synchronized(widgetLock) {
+                RelayTimerNotification.writeEnabled(context, enabled)
+                refreshAll(context)
+                return RelayTimerNotification.settings(context)
+            }
+        }
+
+        @JvmStatic
+        fun dismissTimerNotification(context: Context, intent: Intent) {
+            synchronized(widgetLock) {
+                if (RelayTimerNotification.consumeDismiss(context, intent)) refreshAll(context)
+            }
+        }
+
+        private fun revokeActionSlot(context: Context, id: Int) {
+            val prefs = preferences(context)
+            val edit = prefs.edit()
+            for ((key, value) in prefs.all) if (key.startsWith("slot:$id:") && value is String) {
+                cancelCapability(context, key, value)
+                edit.remove(key).remove("token:$value")
+            }
+            edit.commit()
         }
 
         private fun openApp(context: Context, id: Int): PendingIntent = PendingIntent.getActivity(

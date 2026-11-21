@@ -2,19 +2,34 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:relay/timer_guard_settings.dart';
 
+Future<Map<String, dynamic>> availableSettings() async => {
+  'enabled': true,
+  'notificationsAllowed': true,
+  'channelEnabled': true,
+};
+
+Future<void> mount(WidgetTester tester, TimerGuardSettings settings) async {
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(body: SingleChildScrollView(child: settings)),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
+Future<void> tapButton(WidgetTester tester, String label) async {
+  await tester.ensureVisible(find.text(label));
+  await tester.tap(find.text(label));
+  await tester.pumpAndSettle();
+}
+
 void main() {
-  testWidgets('check-in settings explain the response window and stop limits', (
+  testWidgets('check-ins explain response window and stop limits', (
     tester,
   ) async {
-    await tester.pumpWidget(
-      const MaterialApp(
-        home: Scaffold(
-          body: TimerGuardSettings(
-            responseMinutes: 15,
-            androidSupported: false,
-          ),
-        ),
-      ),
+    await mount(
+      tester,
+      const TimerGuardSettings(responseMinutes: 15, androidSupported: false),
     );
     expect(find.text('Timer check-ins'), findsOneWidget);
     expect(find.textContaining('every 3 hours'), findsOneWidget);
@@ -28,133 +43,221 @@ void main() {
       find.text('Check-in notifications are available in the Android app.'),
       findsOneWidget,
     );
-    expect(find.text('Enable check-in notifications'), findsNothing);
+    expect(find.text('Enable timer notifications'), findsNothing);
+    expect(find.byType(Switch), findsNothing);
   });
 
-  testWidgets(
-    'notification permission success does not change timer or shift settings',
-    (tester) async {
-      var requests = 0;
-      var exactRequests = 0;
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TimerGuardSettings(
-              responseMinutes: 15,
-              androidSupported: true,
-              requestPermission: () async {
-                requests++;
-                return true;
-              },
-              requestPreciseAlerts: () async {
-                exactRequests++;
-                return true;
-              },
-            ),
-          ),
-        ),
-      );
-      await tester.tap(find.text('Enable check-in notifications'));
-      await tester.pumpAndSettle();
-      expect(requests, 1);
-      expect(exactRequests, 0);
-      expect(find.text('Check-in notifications enabled.'), findsOneWidget);
-      expect(find.byType(Switch), findsNothing);
-    },
-  );
-
-  testWidgets('denied notification permission explains the next step', (
+  testWidgets('notification permission stays independent of exact alarms', (
     tester,
   ) async {
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: TimerGuardSettings(
-            responseMinutes: 15,
-            androidSupported: true,
-            requestPermission: () async => false,
-          ),
-        ),
+    var requests = 0, exactRequests = 0;
+    await mount(
+      tester,
+      TimerGuardSettings(
+        responseMinutes: 15,
+        androidSupported: true,
+        loadTimerSettings: availableSettings,
+        requestPermission: () async {
+          requests++;
+          return true;
+        },
+        requestPreciseAlerts: () async {
+          exactRequests++;
+          return true;
+        },
       ),
     );
-    await tester.tap(find.text('Enable check-in notifications'));
-    await tester.pumpAndSettle();
+    await tapButton(tester, 'Enable timer notifications');
+    expect(requests, 1);
+    expect(exactRequests, 0);
+    expect(find.text('Timer notifications enabled.'), findsOneWidget);
+  });
+
+  testWidgets('denied notifications explain where to enable them', (
+    tester,
+  ) async {
+    await mount(
+      tester,
+      TimerGuardSettings(
+        responseMinutes: 15,
+        androidSupported: true,
+        loadTimerSettings: availableSettings,
+        requestPermission: () async => false,
+      ),
+    );
+    await tapButton(tester, 'Enable timer notifications');
     expect(
       find.textContaining('Allow Relay notifications in Android settings'),
       findsOneWidget,
     );
   });
 
-  testWidgets('non-Android settings never call the OS permission handler', (
-    tester,
-  ) async {
+  testWidgets('non-Android never requests OS permissions', (tester) async {
     var requested = false;
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: TimerGuardSettings(
-            responseMinutes: 15,
-            androidSupported: false,
-            requestPermission: () async {
-              requested = true;
-              return true;
-            },
-          ),
-        ),
+    await mount(
+      tester,
+      TimerGuardSettings(
+        responseMinutes: 15,
+        androidSupported: false,
+        requestPermission: () async {
+          requested = true;
+          return true;
+        },
       ),
     );
-    await tester.pumpAndSettle();
     expect(requested, isFalse);
     expect(find.byType(OutlinedButton), findsNothing);
   });
 
-  testWidgets('precise timer alerts have a separate permission request', (
+  testWidgets('precise alerts have a separate permission request', (
     tester,
   ) async {
-    var notificationRequests = 0, exactRequests = 0;
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: TimerGuardSettings(
-            responseMinutes: 15,
-            androidSupported: true,
-            requestPermission: () async {
-              notificationRequests++;
-              return true;
-            },
-            requestPreciseAlerts: () async {
-              exactRequests++;
-              return true;
-            },
-          ),
-        ),
+    var requests = 0, exactRequests = 0;
+    await mount(
+      tester,
+      TimerGuardSettings(
+        responseMinutes: 15,
+        androidSupported: true,
+        loadTimerSettings: availableSettings,
+        requestPermission: () async {
+          requests++;
+          return true;
+        },
+        requestPreciseAlerts: () async {
+          exactRequests++;
+          return true;
+        },
       ),
     );
-    await tester.tap(find.text('Allow precise timer alerts'));
-    await tester.pumpAndSettle();
-    expect(notificationRequests, 0);
+    await tapButton(tester, 'Allow precise timer alerts');
+    expect(requests, 0);
     expect(exactRequests, 1);
     expect(find.text('Precise timer alerts enabled.'), findsOneWidget);
   });
 
-  testWidgets('denied precise alerts keep their permission status visible', (
+  testWidgets('denied precise alerts explain Alarms and reminders', (
     tester,
   ) async {
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: TimerGuardSettings(
-            responseMinutes: 15,
-            androidSupported: true,
-            requestPreciseAlerts: () async => false,
-          ),
-        ),
+    await mount(
+      tester,
+      TimerGuardSettings(
+        responseMinutes: 15,
+        androidSupported: true,
+        loadTimerSettings: availableSettings,
+        requestPreciseAlerts: () async => false,
       ),
     );
-    await tester.tap(find.text('Allow precise timer alerts'));
-    await tester.pumpAndSettle();
+    await tapButton(tester, 'Allow precise timer alerts');
     expect(
       find.textContaining('Allow Alarms & reminders for Relay'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('saved lock-screen preference loads and enables controls', (
+    tester,
+  ) async {
+    var enabled = false, requests = 0;
+    Future<Map<String, dynamic>> settings() async => {
+      'enabled': enabled,
+      'notificationsAllowed': true,
+      'channelEnabled': true,
+    };
+    await mount(
+      tester,
+      TimerGuardSettings(
+        responseMinutes: 15,
+        androidSupported: true,
+        loadTimerSettings: settings,
+        setTimerEnabled: (value) async {
+          enabled = value;
+          return settings();
+        },
+        requestPermission: () async {
+          requests++;
+          return true;
+        },
+      ),
+    );
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+    await tester.tap(find.byType(Switch));
+    await tester.pumpAndSettle();
+    expect(enabled, isTrue);
+    expect(requests, 1);
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+  });
+
+  testWidgets('hiding lock-screen card does not request permissions', (
+    tester,
+  ) async {
+    var enabled = true, requests = 0;
+    Future<Map<String, dynamic>> settings() async => {'enabled': enabled};
+    await mount(
+      tester,
+      TimerGuardSettings(
+        responseMinutes: 15,
+        androidSupported: true,
+        loadTimerSettings: settings,
+        setTimerEnabled: (value) async {
+          enabled = value;
+          return settings();
+        },
+        requestPermission: () async {
+          requests++;
+          return true;
+        },
+      ),
+    );
+    await tester.tap(find.byType(Switch));
+    await tester.pumpAndSettle();
+    expect(enabled, isFalse);
+    expect(requests, 0);
+    expect(
+      find.text('Lock-screen timer hidden. Your timer keeps running.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'disabled timer category is explained without changing preference',
+    (tester) async {
+      await mount(
+        tester,
+        TimerGuardSettings(
+          responseMinutes: 15,
+          androidSupported: true,
+          loadTimerSettings: () async => {
+            'enabled': true,
+            'notificationsAllowed': true,
+            'channelEnabled': false,
+          },
+        ),
+      );
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+      expect(
+        find.textContaining('Active timers notification category'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('failed preference write preserves the existing switch', (
+    tester,
+  ) async {
+    await mount(
+      tester,
+      TimerGuardSettings(
+        responseMinutes: 15,
+        androidSupported: true,
+        loadTimerSettings: availableSettings,
+        setTimerEnabled: (_) async => throw StateError('unavailable'),
+      ),
+    );
+    await tester.tap(find.byType(Switch));
+    await tester.pumpAndSettle();
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+    expect(
+      find.textContaining('Could not change the lock-screen timer setting'),
       findsOneWidget,
     );
   });

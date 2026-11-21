@@ -17,6 +17,7 @@ class RelayTimerGuardReceiver : BroadcastReceiver() {
         if (intent.action in setOf(Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED,
                 Intent.ACTION_TIME_CHANGED, AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED)) {
             RelayTimerGuard.restore(context)
+            RelayWidgetProvider.refreshAll(context)
             return
         }
         val action = RelayTimerGuard.consumeRequest(context, intent) ?: return

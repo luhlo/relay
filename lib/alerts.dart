@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/timezone.dart' as tz;
 
 import 'model.dart';
@@ -15,6 +16,25 @@ class ShiftAlerts {
         android: AndroidInitializationSettings('ic_notification'),
       ),
     );
+  }
+
+  /// Ask at the first in-app timer start, independently of shift reminders.
+  /// Later requests are explicit from Settings, so a denial is not repeated
+  /// every time a parent starts a shift.
+  Future<void> requestTimerNotifications() async {
+    if (!supported) return;
+    final android = plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    if (android == null || await android.areNotificationsEnabled() == true) {
+      return;
+    }
+    final preferences = await SharedPreferences.getInstance();
+    const key = 'relay.timerNotificationPermissionRequested';
+    if (preferences.getBool(key) == true) return;
+    await preferences.setBool(key, true);
+    await android.requestNotificationsPermission();
   }
 
   Future<bool> enable() async {

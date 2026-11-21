@@ -1,9 +1,41 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:relay/home_widget.dart';
+import 'package:relay/cloud.dart';
 import 'package:relay/model.dart';
 import 'package:relay/storage.dart';
 import 'package:relay/widget_background.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' hide Session;
+
+class _PendingCloudStore extends CloudStore {
+  _PendingCloudStore()
+    : super(
+        SupabaseClient('https://relay.example.invalid', 'test-key'),
+        'owner-id',
+        ['Baby 1'],
+      );
+  RelayState state = RelayState();
+  int syncCalls = 0;
+  bool blocked = false;
+  @override
+  Future<RelayState> load() async => RelayState.fromJson(state.toJson());
+  @override
+  Future<void> save(RelayState value) async {
+    state = RelayState.fromJson(value.toJson());
+    syncStatus.value = CloudSyncStatus(
+      phase: blocked ? CloudSyncPhase.conflict : CloudSyncPhase.pending,
+      pending: true,
+    );
+  }
+
+  @override
+  Future<bool> hasPendingChanges() async => true;
+  @override
+  Future<void> synchronize() async {
+    syncCalls++;
+    throw StateError('A timer tap must not wait for a network sync');
+  }
+}
 
 class _BackgroundStore extends RelayStore {
   RelayState state = RelayState();
@@ -137,5 +169,51 @@ void main() {
     expect(opened, isFalse);
     expect(completions.last['success'], isFalse);
     expect(store.saves, 0);
+  });
+
+  test('cloud timer taps acknowledge local saves and schedule sync without awaiting it', () async {
+    final cloud = _PendingCloudStore();
+    addTearDown(cloud.client.dispose);
+    final snapshot = widgetSnapshot(
+      cloud.state,
+      'cloud:owner-id',
+      DateTime.now(),
+    );
+    job = {
+      'context': 'cloud:owner-id',
+      'action': 'work',
+      'requestId': 'cloud-offline-work',
+      'expectedStatus': snapshot['status'],
+      'sessionStart': snapshot['sessionStart'],
+    };
+    await runWidgetBackground(openStore: (_) async => cloud);
+    expect(cloud.state.active?.kind, ShiftKind.focus);
+    expect(cloud.syncCalls, 0);
+    expect(completions.single['success'], isTrue);
+    expect(completions.single['syncPending'], isTrue);
+    expect(completions.single['syncBlocked'], isFalse);
+    expect(completions.single['error'], contains('Saved on this device'));
+  });
+
+  test('conflicted offline saves remain successful while automatic syncing stays blocked', () async {
+    final cloud = _PendingCloudStore()..blocked = true;
+    addTearDown(cloud.client.dispose);
+    final snapshot = widgetSnapshot(
+      cloud.state,
+      'cloud:owner-id',
+      DateTime.now(),
+    );
+    job = {
+      'context': 'cloud:owner-id',
+      'action': 'work',
+      'requestId': 'cloud-conflict-work',
+      'expectedStatus': snapshot['status'],
+      'sessionStart': snapshot['sessionStart'],
+    };
+    await runWidgetBackground(openStore: (_) async => cloud);
+    expect(completions.single['success'], isTrue);
+    expect(completions.single['syncPending'], isTrue);
+    expect(completions.single['syncBlocked'], isTrue);
+    expect(cloud.syncCalls, 0);
   });
 }

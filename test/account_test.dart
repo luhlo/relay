@@ -18,6 +18,107 @@ class SettingsStore extends RelayStore {
 }
 
 void main() {
+  testWidgets('password visibility preserves input and resets for sign-up', (
+    tester,
+  ) async {
+    await tester.pumpWidget(MaterialApp(home: AuthForm(onLocal: () {})));
+
+    final password = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField &&
+          widget.decoration?.labelText == 'Password (8+ characters)',
+    );
+    await tester.enterText(password, 'parent-password');
+    expect(tester.widget<TextField>(password).obscureText, isTrue);
+    expect(tester.widget<TextField>(password).autofillHints, [
+      AutofillHints.password,
+    ]);
+
+    await tester.ensureVisible(find.byTooltip('Show password'));
+    await tester.tap(find.byTooltip('Show password'));
+    await tester.pump();
+    expect(tester.widget<TextField>(password).obscureText, isFalse);
+    expect(
+      tester.widget<TextField>(password).controller!.text,
+      'parent-password',
+    );
+    expect(find.byTooltip('Hide password'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('Create an account'));
+    await tester.tap(find.text('Create an account'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(password).obscureText, isTrue);
+    expect(tester.widget<TextField>(password).autofillHints, [
+      AutofillHints.newPassword,
+    ]);
+    expect(
+      tester.widget<TextField>(password).controller!.text,
+      'parent-password',
+    );
+
+    await tester.ensureVisible(find.byTooltip('Show password'));
+    await tester.tap(find.byTooltip('Show password'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Hide password'));
+    await tester.pump();
+    expect(tester.widget<TextField>(password).obscureText, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('password recovery visibility keeps new-password validation', (
+    tester,
+  ) async {
+    var completed = false;
+    await tester.pumpWidget(
+      MaterialApp(home: PasswordRecovery(onDone: () => completed = true)),
+    );
+    final password = find.byType(TextField);
+    await tester.enterText(password, 'short');
+    await tester.tap(find.byTooltip('Show password'));
+    await tester.pump();
+    expect(tester.widget<TextField>(password).obscureText, isFalse);
+    expect(tester.widget<TextField>(password).controller!.text, 'short');
+    expect(tester.widget<TextField>(password).autofillHints, [
+      AutofillHints.newPassword,
+    ]);
+    await tester.tap(find.text('Save password'));
+    await tester.pump();
+    expect(find.text('Use at least 8 characters.'), findsOneWidget);
+    expect(completed, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'logout requires confirmation and cancellation keeps the account',
+    (tester) async {
+      var signOuts = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HouseholdSetup(
+            onDone: () async {},
+            onSignOut: () async => signOuts++,
+          ),
+        ),
+      );
+
+      await tester.tap(find.widgetWithText(TextButton, 'Log out'));
+      await tester.pumpAndSettle();
+      expect(find.text('Log out?'), findsOneWidget);
+      expect(signOuts, 0);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(signOuts, 0);
+
+      await tester.tap(find.widgetWithText(TextButton, 'Log out'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Log out'));
+      await tester.pumpAndSettle();
+      expect(signOuts, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('signed-in email is labelled and read-only', (tester) async {
     await tester.pumpWidget(
       const MaterialApp(

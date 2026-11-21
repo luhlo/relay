@@ -66,6 +66,30 @@ APK. Keep the production upload-key configuration separate. Confirm the APK has
 `libapp.so`, no `kernel_blob.bin`, the expected certificate and a higher version
 code, then use `adb install -r --user 0` to retain the phone's app data.
 
+## Lock-screen timer controls (1.16.0)
+
+The Active timers notification mirrors the saved session even without a placed
+home-screen widget. Work shows Interruption and End; an interruption shows its
+own elapsed clock, Resume and End; Baby Time shows the selected child label and
+End. Buttons use the same account/session-checked background save path as widgets
+and do not launch an Activity. Android advances the chronometer itself; this does
+not require a foreground service or exact-alarm access.
+
+The device-local Lock-screen timer setting is on by default. Notifications must
+be allowed, including the Active timers category. Android lock-screen privacy
+settings may hide names or controls. An in-app start asks for notification
+permission once; Settings provides an explicit permission request afterwards.
+Android may let the user dismiss an ongoing notification. From 1.16.1, dismissal
+hides it for the current session without stopping the timer. A new session or
+turning Lock-screen timer off and on restores the display.
+
+Version 1.16.1 requests official Live Update promotion on Android 16+ while an
+active timer is running. On supported Samsung software this can surface in the
+Now bar. Samsung and Android control eligibility and position; Relay cannot pin
+a standard notification to exact footer coordinates. Unsupported or unpromoted
+notifications retain their regular timer display and controls. The same
+Lock-screen timer switch hides either display.
+
 ## Play Console
 
 1. Create/select Relay and use Play App Signing. Upload the AAB to an internal

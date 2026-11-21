@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'alerts.dart';
+import 'home_widget.dart';
 
 /// Notification permission is independent of shift reminders and exact alarms.
 /// The timer's stop rules stay enabled even if notifications are denied.
@@ -13,24 +14,103 @@ class TimerGuardSettings extends StatefulWidget {
     this.requestPermission,
     this.requestPreciseAlerts,
     this.androidSupported,
+    this.loadTimerSettings,
+    this.setTimerEnabled,
   });
 
   final int responseMinutes;
   final Future<bool> Function()? requestPermission;
   final Future<bool> Function()? requestPreciseAlerts;
   final bool? androidSupported;
+  final Future<Map<String, dynamic>> Function()? loadTimerSettings;
+  final Future<Map<String, dynamic>> Function(bool)? setTimerEnabled;
 
   @override
   State<TimerGuardSettings> createState() => _TimerGuardSettingsState();
 }
 
-class _TimerGuardSettingsState extends State<TimerGuardSettings> {
+class _TimerGuardSettingsState extends State<TimerGuardSettings>
+    with WidgetsBindingObserver {
   bool busy = false;
   bool requestingPreciseAlerts = false;
+  bool lockScreenTimerEnabled = true;
+  bool? notificationPermissionAllowed;
+  bool? timerChannelEnabled;
   String? message;
   bool get supported =>
       widget.androidSupported ??
       (!kIsWeb && defaultTargetPlatform == TargetPlatform.android);
+
+  @override
+  void initState() {
+    super.initState();
+    if (supported) {
+      WidgetsBinding.instance.addObserver(this);
+      refreshTimerSettings();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && supported && !busy) {
+      refreshTimerSettings();
+    }
+  }
+
+  Future<void> refreshTimerSettings() async {
+    try {
+      final settings =
+          await (widget.loadTimerSettings ??
+              RelayHomeWidget.instance.timerNotificationSettings)();
+      if (!mounted) return;
+      setState(() {
+        lockScreenTimerEnabled = settings['enabled'] != false;
+        notificationPermissionAllowed =
+            settings['notificationsAllowed'] as bool?;
+        timerChannelEnabled = settings['channelEnabled'] as bool?;
+      });
+    } catch (_) {
+      // Notification settings must not block tracking or the settings page.
+    }
+  }
+
+  Future<void> setLockScreenTimer(bool enabled) async {
+    if (!supported || busy) return;
+    setState(() {
+      busy = true;
+      message = null;
+    });
+    try {
+      final settings =
+          await (widget.setTimerEnabled ??
+              RelayHomeWidget.instance.setTimerNotificationEnabled)(enabled);
+      if (enabled) await (widget.requestPermission ?? _requestPermission)();
+      if (!mounted) return;
+      setState(() => lockScreenTimerEnabled = settings['enabled'] != false);
+      await refreshTimerSettings();
+      if (mounted) {
+        setState(
+          () => message = enabled
+              ? 'Lock-screen timer enabled. Android notification settings control its visibility.'
+              : 'Lock-screen timer hidden. Your timer keeps running.',
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => message = 'Could not change the lock-screen timer setting. Please try again.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
 
   Future<void> enableNotifications() async {
     if (!supported || busy) return;
@@ -41,9 +121,10 @@ class _TimerGuardSettingsState extends State<TimerGuardSettings> {
     });
     try {
       final enabled = await (widget.requestPermission ?? _requestPermission)();
+      await refreshTimerSettings();
       if (!mounted) return;
       setState(() {
-        message = enabled ? 'Check-in notifications enabled.' : 'Notifications are off. Allow Relay notifications in Android settings to receive check-ins.';
+        message = enabled ? 'Timer notifications enabled.' : 'Notifications are off. Allow Relay notifications in Android settings to see the lock-screen timer and receive check-ins.';
       });
     } catch (_) {
       if (mounted) {
@@ -112,6 +193,30 @@ class _TimerGuardSettingsState extends State<TimerGuardSettings> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (supported) ...[
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Lock-screen timer'),
+              subtitle: const Text(
+                'Show Work Time or your child’s name, the timer, and Interruption, Resume and End controls.',
+              ),
+              value: lockScreenTimerEnabled,
+              onChanged: busy ? null : setLockScreenTimer,
+            ),
+            const Text(
+              'Your phone controls placement. On supported Samsung phones, live timers can appear in the Now bar.',
+            ),
+            if (lockScreenTimerEnabled &&
+                notificationPermissionAllowed == false)
+              const Text(
+                'Allow Relay notifications in Android settings to show the lock-screen timer.',
+              )
+            else if (lockScreenTimerEnabled && timerChannelEnabled == false)
+              const Text(
+                'Allow the Active timers notification category in Android settings to show this timer.',
+              ),
+            const Divider(height: 24),
+          ],
           const Text(
             'Timer check-ins',
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
@@ -136,7 +241,7 @@ class _TimerGuardSettingsState extends State<TimerGuardSettings> {
               label: Text(
                 busy && !requestingPreciseAlerts
                     ? 'Enabling…'
-                    : 'Enable check-in notifications',
+                    : 'Enable timer notifications',
               ),
             ),
             const SizedBox(height: 8),

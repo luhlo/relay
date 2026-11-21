@@ -78,6 +78,8 @@ class _TrendsCardState extends State<TrendsCard> {
   DateTime? selected;
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final dark = colors.brightness == Brightness.dark;
     final start = widget.starting;
     final countDays = start == null
         ? days
@@ -104,17 +106,17 @@ class _TrendsCardState extends State<TrendsCard> {
         ? [
             _Series(
               'Total work',
-              const Color(0xFF24232C),
+              colors.onSurface,
               points.map((p) => p.hasWork ? p.total / 60 : null).toList(),
             ),
             _Series(
               'Actual focus',
-              const Color(0xFF6450CA),
+              colors.primary,
               points.map((p) => p.hasWork ? p.actual / 60 : null).toList(),
             ),
             _Series(
               'Interrupted',
-              const Color(0xFFAC6B06),
+              dark ? const Color(0xFFF3C879) : const Color(0xFF985E00),
               points.map((p) => p.hasWork ? p.lost / 60 : null).toList(),
             ),
           ]
@@ -122,7 +124,7 @@ class _TrendsCardState extends State<TrendsCard> {
         ? [
             _Series(
               'Interruption count',
-              const Color(0xFFAC6B06),
+              dark ? const Color(0xFFF3C879) : const Color(0xFF985E00),
               points
                   .map((p) => p.hasWork ? p.interruptions.toDouble() : null)
                   .toList(),
@@ -131,13 +133,14 @@ class _TrendsCardState extends State<TrendsCard> {
         : [
             _Series(
               'Total Baby Time',
-              const Color(0xFF24232C),
+              colors.onSurface,
               points.map((p) => p.hasBaby ? p.baby / 60 : null).toList(),
             ),
             for (final entry in widget.data.availableBabies.indexed)
               _Series(
                 widget.data.babyName(entry.$2),
-                _careColors[entry.$1 % _careColors.length],
+                (dark ? _darkCareColors : _careColors)[entry.$1 %
+                    _careColors.length],
                 points
                     .map((p) => p.hasBaby ? (p.care[entry.$2] ?? 0) / 60 : null)
                     .toList(),
@@ -150,9 +153,9 @@ class _TrendsCardState extends State<TrendsCard> {
     return Container(
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: colors.surfaceContainerLow,
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: const Color(0xFFE8E8E2)),
+        border: Border.all(color: colors.outlineVariant),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -162,9 +165,9 @@ class _TrendsCardState extends State<TrendsCard> {
             style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: 8),
-          const Text(
+          Text(
             'See how focus, interruptions, and care change day by day.',
-            style: TextStyle(color: Color(0xFF73727C), height: 1.5),
+            style: TextStyle(color: colors.onSurfaceVariant, height: 1.5),
           ),
           const SizedBox(height: 16),
           if (start == null)
@@ -185,7 +188,7 @@ class _TrendsCardState extends State<TrendsCard> {
           const SizedBox(height: 8),
           Text(
             '${DateFormat.MMMd().format(points.first.day)} – ${DateFormat.yMMMd().format(points.last.day)}',
-            style: const TextStyle(fontSize: 12, color: Color(0xFF73727C)),
+            style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
           ),
           const SizedBox(height: 16),
           Wrap(
@@ -231,7 +234,15 @@ class _TrendsCardState extends State<TrendsCard> {
                   height: 220,
                   width: double.infinity,
                   child: CustomPaint(
-                    painter: _TrendPainter(points, series, index),
+                    painter: _TrendPainter(
+                      points,
+                      series,
+                      index,
+                      labelColor: colors.onSurfaceVariant,
+                      gridColor: colors.outlineVariant,
+                      highlightColor: colors.primary,
+                      pointCenterColor: colors.surfaceContainerLow,
+                    ),
                   ),
                 ),
               ),
@@ -270,7 +281,7 @@ class _TrendsCardState extends State<TrendsCard> {
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: const Color(0xFFF7F7F2),
+              color: colors.surface,
               borderRadius: BorderRadius.circular(14),
             ),
             child: Column(
@@ -331,12 +342,12 @@ class _TrendsCardState extends State<TrendsCard> {
             ),
           ],
           const SizedBox(height: 12),
-          const Text(
+          Text(
             'Tap a day to inspect it. Gaps mean no sessions recorded, not zero activity. Today is incomplete. Interruption counts use the day each interruption started.',
             style: TextStyle(
               fontSize: 11,
               height: 1.6,
-              color: Color(0xFF73727C),
+              color: colors.onSurfaceVariant,
             ),
           ),
         ],
@@ -364,11 +375,32 @@ const _careColors = [
   Color(0xFF24232C),
 ];
 
+const _darkCareColors = [
+  Color(0xFFBCD88E),
+  Color(0xFF90C7F4),
+  Color(0xFFF3C879),
+  Color(0xFFE3AEF3),
+  Color(0xFF84D7CF),
+  Color(0xFFFFB4AD),
+  Color(0xFFBFC9FF),
+  Color(0xFFDCC4A5),
+  Color(0xFFF1EEF6),
+];
+
 class _TrendPainter extends CustomPainter {
-  _TrendPainter(this.days, this.series, this.selected);
+  _TrendPainter(
+    this.days,
+    this.series,
+    this.selected, {
+    required this.labelColor,
+    required this.gridColor,
+    required this.highlightColor,
+    required this.pointCenterColor,
+  });
   final List<TrendDay> days;
   final List<_Series> series;
   final int selected;
+  final Color labelColor, gridColor, highlightColor, pointCenterColor;
   @override
   void paint(Canvas canvas, Size size) {
     const left = 40.0, top = 10.0;
@@ -383,7 +415,7 @@ class _TrendPainter extends CustomPainter {
       final p = TextPainter(
         text: TextSpan(
           text: text,
-          style: const TextStyle(color: Color(0xFF73727C), fontSize: 10),
+          style: TextStyle(color: labelColor, fontSize: 10),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
@@ -404,7 +436,7 @@ class _TrendPainter extends CustomPainter {
       canvas.drawLine(
         Offset(left, y),
         Offset(left + width, y),
-        Paint()..color = const Color(0xFFE8E8E2),
+        Paint()..color = gridColor,
       );
       label('${step * i}', Offset(0, y - 6));
     }
@@ -415,7 +447,7 @@ class _TrendPainter extends CustomPainter {
       Offset(x(selected), top),
       Offset(x(selected), top + height),
       Paint()
-        ..color = const Color(0xFFC8BFF3)
+        ..color = highlightColor
         ..strokeWidth = 1.5,
     );
     for (final i in {0, (days.length - 1) ~/ 2, days.length - 1}) {
@@ -452,7 +484,7 @@ class _TrendPainter extends CustomPainter {
         canvas.drawCircle(
           point,
           i == selected ? 2.5 : 1.2,
-          Paint()..color = Colors.white,
+          Paint()..color = pointCenterColor,
         );
         previous = point;
       }

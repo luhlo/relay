@@ -36,9 +36,9 @@ jobs:
 
       - name: Build PWA
         run: |
-          flutter build web --release --base-href /
-          cp build/web/index.html build/web/404.html
-          touch build/web/.nojekyll
+          flutter build web --release --base-href / --pwa-strategy=none
+          python3 tool/finish_web_build.py
+          node tool/test_service_worker.mjs build/web
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

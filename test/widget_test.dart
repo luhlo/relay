@@ -182,7 +182,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Interruption').hitTestable(), findsOneWidget);
-    expect(find.byTooltip('Open account menu'), findsOneWidget);
+    expect(find.byTooltip('Settings'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

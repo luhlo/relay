@@ -2,6 +2,7 @@
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <!-- Relay queues ordinary short workers, never foreground or expedited work. -->
@@ -49,6 +50,7 @@
             </intent-filter>
         </receiver>
         <receiver android:name=".RelayWidgetActionReceiver" android:exported="false" />
+        <receiver android:name=".RelayTimerNotificationDismissReceiver" android:exported="false" />
         <receiver android:name=".RelayWidgetProvider" android:exported="false"
             android:label="Relay 4 × 1">
             <intent-filter>

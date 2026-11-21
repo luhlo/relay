@@ -20,7 +20,13 @@ class WidgetBridge extends RelayHomeWidget {
   @override
   bool get supported => true;
   @override
-  Future<void> sync(RelayState state, String context, DateTime now) async {
+  Future<void> sync(
+    RelayState state,
+    String context,
+    DateTime now, {
+    bool? syncPending,
+    bool? syncBlocked,
+  }) async {
     snapshot = widgetSnapshot(state, context, now);
   }
 }

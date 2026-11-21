@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -8,12 +9,18 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'alerts.dart';
+import 'app_theme.dart';
 import 'model.dart';
 import 'storage.dart';
 import 'time_pies.dart';
 import 'trends.dart';
 import 'account.dart';
 import 'cloud.dart';
+import 'cloud_sync_ui.dart';
+import 'cloud_sync_background.dart';
+import 'connection_events.dart';
+import 'diagnostics.dart';
+import 'experience.dart';
 import 'home_widget.dart';
 import 'widget_background.dart';
 import 'timer_guard.dart';
@@ -37,45 +44,71 @@ String durationText(int seconds) => seconds < 60
 String timeText(DateTime d) => DateFormat.jm().format(d);
 
 Future<void> main() async {
+  final launch = Stopwatch()..start();
   WidgetsFlutterBinding.ensureInitialized();
+  // Preferences and optional monitoring must not make tracking unavailable.
+  try {
+    await RelayThemeController.instance.load().timeout(
+      const Duration(seconds: 2),
+    );
+  } catch (_) {
+    // System appearance remains the fallback when device storage is unavailable.
+  }
   await Supabase.initialize(
     url: relaySupabaseUrl,
     publishableKey: relayPublishableKey,
   );
   runApp(const RelayApp());
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    final startupDuration = launch.elapsed;
+    // Reporting starts after the UI is usable and never delays its first frame.
+    unawaited(() async {
+      try {
+        await RelayDiagnostics.instance.initialize();
+        RelayDiagnostics.instance.recordSlowOperation(
+          'launch',
+          startupDuration,
+        );
+      } catch (_) {
+        // Optional monitoring cannot prevent access to the app or its timers.
+      }
+    }());
+  });
+}
+
+Future<bool> _hasExistingRelayActivity() async {
+  if (Supabase.instance.client.auth.currentUser != null) return true;
+  try {
+    final records = await RelayStore().load();
+    return records.sessions.isNotEmpty || records.shifts.isNotEmpty;
+  } catch (_) {
+    // A returning user's unavailable records should not be covered by a guide.
+    return true;
+  }
 }
 
 @pragma('vm:entry-point')
 Future<void> relayWidgetBackground() => runWidgetBackground();
 
+@pragma('vm:entry-point')
+Future<void> relayCloudSyncBackground() => runCloudSyncBackground();
+
 class RelayApp extends StatelessWidget {
   const RelayApp({super.key});
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    debugShowCheckedModeBanner: false,
-    title: 'Relay • A little more balance',
-    theme: ThemeData(
-      useMaterial3: true,
-      fontFamily: 'Manrope',
-      scaffoldBackgroundColor: paper,
-      colorScheme: ColorScheme.fromSeed(seedColor: violet, surface: paper),
-      textTheme: const TextTheme(
-        bodyMedium: TextStyle(color: ink, fontSize: 14),
-        bodyLarge: TextStyle(color: ink),
-      ),
-      filledButtonTheme: FilledButtonThemeData(
-        style: FilledButton.styleFrom(
-          minimumSize: const Size(48, 56),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-        ),
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: RelayThemeController.instance,
+    builder: (context, _) => MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'Relay • A little more balance',
+      theme: relayTheme(Brightness.light),
+      darkTheme: relayTheme(Brightness.dark),
+      themeMode: RelayThemeController.instance.mode,
+      home: RelayExperienceHost(
+        hasExistingActivity: _hasExistingRelayActivity,
+        child: const AccountGate(),
       ),
     ),
-    home: const AccountGate(),
   );
 }
 
@@ -98,6 +131,17 @@ class RelayHome extends StatefulWidget {
 }
 
 class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
+  ColorScheme get colors => Theme.of(context).colorScheme;
+  Color get ink => colors.onSurface;
+  Color get muted => colors.onSurfaceVariant;
+  Color get paper => colors.surface;
+  Color get paleViolet => colors.primaryContainer;
+  Color get violet => colors.primary;
+  Color get interruptionInk =>
+      colors.brightness == Brightness.dark ? amber : const Color(0xFF985E00);
+  Color get careInk => colors.brightness == Brightness.dark
+      ? const Color(0xFFBCD88E)
+      : const Color(0xFF789638);
   late final store = widget.store ?? RelayStore();
   late final alerts = widget.alerts ?? ShiftAlerts();
   late final homeWidget = widget.homeWidget ?? RelayHomeWidget.instance;
@@ -105,6 +149,10 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
       store is CloudStore ? 'cloud:${(store as CloudStore).userId}' : 'local';
   bool refreshWhenIdle = false;
   StreamSubscription<void>? widgetUpdates;
+  StreamSubscription<void>? connectionUpdates;
+  StreamSubscription<AuthState>? syncAuthUpdates;
+  Timer? syncRetry;
+  bool syncingCloud = false, householdScopeChanged = false;
   RelayState data = RelayState();
   bool loading = true, busy = false, loadFailed = false;
   String? error;
@@ -117,6 +165,25 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (store is CloudStore && !widget.readOnly) {
+      connectionUpdates = connectionRestoredEvents().listen(
+        (_) => unawaited(syncCloud()),
+      );
+      syncAuthUpdates = (store as CloudStore).client.auth.onAuthStateChange
+          .listen((event) {
+            if (event.event == AuthChangeEvent.tokenRefreshed ||
+                event.event == AuthChangeEvent.signedIn) {
+              unawaited(syncCloud());
+            }
+          }, onError: (Object _) {});
+      syncRetry = Timer.periodic(const Duration(seconds: 30), (_) {
+        if (WidgetsBinding.instance.lifecycleState == null ||
+            WidgetsBinding.instance.lifecycleState ==
+                AppLifecycleState.resumed) {
+          unawaited(syncCloud());
+        }
+      });
+    }
     if (!widget.readOnly) {
       widgetUpdates = homeWidget.updates.listen((_) {
         if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
@@ -146,12 +213,18 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     });
   }
 
-  Future<void> load() async {
+  Future<void> load({bool silent = false}) async {
+    final loadTime = Stopwatch()..start();
     setState(() {
-      loading = true;
+      if (silent) {
+        busy = true;
+      } else {
+        loading = true;
+      }
       refreshWhenIdle = false;
       loadFailed = false;
       error = null;
+      householdScopeChanged = false;
     });
     try {
       data = await store.load();
@@ -161,9 +234,20 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
       if (data.active == null && data.sessions.isNotEmpty) {
         error = data.sessions.last.autoStopReason;
       }
-    } catch (_) {
+    } catch (loadError, stack) {
+      RelayDiagnostics.instance.captureError(
+        loadError,
+        stack,
+        operation: 'load_records',
+      );
       loadFailed = true;
-      error = 'Could not load your saved data. Your existing data has not been changed.';
+      householdScopeChanged = loadError is CloudScopeException;
+      error = loadError is CloudSaveException ? loadError.message : 'Could not load your saved data. Your existing data has not been changed.';
+    } finally {
+      RelayDiagnostics.instance.recordSlowOperation(
+        'load_records',
+        loadTime.elapsed,
+      );
     }
     if (!loadFailed && !widget.readOnly) {
       try {
@@ -174,10 +258,106 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
       }
     }
     if (mounted) {
-      setState(() => loading = false);
+      setState(() {
+        loading = false;
+        if (silent) busy = false;
+      });
       if (!loadFailed && !widget.readOnly) {
         await syncHomeWidget();
+        unawaited(syncCloud());
       }
+    }
+  }
+
+  Future<void> syncCloud() async {
+    if (store is! CloudStore ||
+        widget.readOnly ||
+        syncingCloud ||
+        loading ||
+        busy ||
+        !mounted ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return;
+    }
+    final cloud = store as CloudStore;
+    if (cloud.client.auth.currentUser?.id != cloud.userId) return;
+    syncingCloud = true;
+    try {
+      await cloud.synchronize();
+      if (!mounted) return;
+      if (busy || loading) {
+        refreshWhenIdle = true;
+        return;
+      }
+      // Inspect without advancing the store's save baseline. A widget may have
+      // changed the cache while the foreground is still showing older records.
+      final current = await cloud.peekCachedState();
+      if (!mounted) return;
+      if (busy || loading) {
+        refreshWhenIdle = true;
+        return;
+      }
+      if (jsonEncode(current.toJson()) != jsonEncode(data.toJson())) {
+        await load(silent: true);
+      } else {
+        await syncHomeWidget();
+      }
+    } catch (_) {
+      // The store publishes offline/auth/conflict status and retains its outbox.
+      // A network retry must never roll back a committed device save.
+    } finally {
+      syncingCloud = false;
+    }
+  }
+
+  Future<void> reviewCloudSync() async {
+    if (store is! CloudStore || busy) return;
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CloudSyncDetailsPage(
+          store: store as CloudStore,
+          onChanged: () async {
+            await load(silent: true);
+          },
+        ),
+      ),
+    );
+    if (mounted) {
+      await load(silent: true);
+      unawaited(syncCloud());
+    }
+  }
+
+  Future<void> openCurrentHousehold() async {
+    if (store is! CloudStore) return;
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('Connect this household?'),
+        content: const Text(
+          'Saved records from the previous household will stay in Saved copies on this device. They will not be uploaded to the new household. A connection is needed to load the new household’s records.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialog, true),
+            child: const Text('Connect household'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    try {
+      await (store as CloudStore).useCurrentHousehold();
+      await load();
+    } catch (failure) {
+      toast(
+        failure is CloudSaveException ? failure.message : 'Connect to the internet and try again. Saved copies are still on this device.',
+      );
     }
   }
 
@@ -188,7 +368,20 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
       if (cloud.client.auth.currentUser?.id != cloud.userId) return;
     }
     try {
-      await homeWidget.sync(data, widgetContext, DateTime.now());
+      final cloud = store is CloudStore ? store as CloudStore : null;
+      await homeWidget.sync(
+        data,
+        widgetContext,
+        DateTime.now(),
+        syncPending: cloud == null ? null : await cloud.hasPendingChanges(),
+        syncBlocked: cloud == null
+            ? null
+            : {
+                CloudSyncPhase.conflict,
+                CloudSyncPhase.needsSignIn,
+                CloudSyncPhase.error,
+              }.contains(cloud.syncStatus.value.phase),
+      );
     } catch (_) {
       // The widget is an optional view; it must never turn a confirmed save
       // into a reported failure or roll back the app's state.
@@ -198,9 +391,11 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      unawaited(RelayDiagnostics.instance.flush());
+      unawaited(syncCloud());
       setState(() => now = DateTime.now());
       if (!widget.readOnly &&
-          homeWidget.supported &&
+          (homeWidget.supported || store is CloudStore) &&
           ModalRoute.of(context)?.isCurrent == true) {
         if (busy || loading) {
           refreshWhenIdle = true;
@@ -215,6 +410,9 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   void dispose() {
     timer?.cancel();
     widgetUpdates?.cancel();
+    connectionUpdates?.cancel();
+    syncAuthUpdates?.cancel();
+    syncRetry?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -231,11 +429,21 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     if (busy || loadFailed || widget.readOnly) return;
     setState(() => busy = true);
     final backup = data.toJson();
+    final previousSessionStart = data.active?.start;
+    final saveTime = Stopwatch()..start();
     try {
       updateTimerGuard(data, DateTime.now());
       mutate();
       await store.save(data);
-    } catch (e) {
+    } catch (e, stack) {
+      saveTime.stop();
+      if (e is! LocalSaveConflict && e is! ArgumentError) {
+        RelayDiagnostics.instance.captureError(
+          e,
+          stack,
+          operation: 'save_records',
+        );
+      }
       data = RelayState.fromJson(backup);
       if (mounted) setState(() => busy = false);
       toast(
@@ -251,7 +459,15 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
       // snapshot. The background engine may already hold the newer state.
       if (mounted) await load();
       return;
+    } finally {
+      saveTime.stop();
+      RelayDiagnostics.instance.recordSlowOperation(
+        'save_records',
+        saveTime.elapsed,
+      );
     }
+    final timerStarted =
+        data.active != null && data.active!.start != previousSessionStart;
     try {
       await alerts.sync(data);
     } catch (_) {
@@ -268,9 +484,24 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     }
     if (message != null) toast(message);
     await syncHomeWidget();
+    unawaited(syncCloud());
+    if (timerStarted) unawaited(requestTimerNotifications());
     if (refreshWhenIdle && mounted) {
       refreshWhenIdle = false;
       await load();
+    }
+  }
+
+  Future<void> requestTimerNotifications() async {
+    if (!homeWidget.supported) return;
+    try {
+      final settings = await homeWidget.timerNotificationSettings();
+      if (settings['enabled'] != false) {
+        await alerts.requestTimerNotifications();
+        if (mounted && !loading && !busy) await syncHomeWidget();
+      }
+    } catch (_) {
+      // Permission prompts never block controls or invalidate a saved timer.
     }
   }
 
@@ -322,6 +553,11 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                         onPressed: load,
                         child: const Text('Try again'),
                       ),
+                      if (householdScopeChanged)
+                        TextButton(
+                          onPressed: openCurrentHousehold,
+                          child: const Text('Connect current household'),
+                        ),
                     ],
                   ),
                 ),
@@ -334,21 +570,10 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                       children: [
                         if (!widget.readOnly) topbar(wide),
                         if (store is CloudStore)
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Flexible(
-                                child: Text(
-                                  'Cloud records · connection required',
-                                  style: TextStyle(fontSize: 11),
-                                ),
-                              ),
-                              TextButton.icon(
-                                onPressed: busy ? null : load,
-                                icon: const Icon(Icons.refresh),
-                                label: const Text('Refresh'),
-                              ),
-                            ],
+                          CloudSyncBanner(
+                            store: store as CloudStore,
+                            onSync: () => unawaited(syncCloud()),
+                            onReview: reviewCloudSync,
                           ),
                         Expanded(
                           child: SingleChildScrollView(
@@ -368,9 +593,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                                         ),
                                         child: Text(
                                           error!,
-                                          style: const TextStyle(
-                                            color: Colors.red,
-                                          ),
+                                          style: TextStyle(color: colors.error),
                                         ),
                                       ),
                                     if (widget.readOnly)
@@ -410,7 +633,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
           : NavigationBar(
               selectedIndex: page,
               onDestinationSelected: (i) => setState(() => page = i),
-              backgroundColor: Colors.white,
+              backgroundColor: colors.surfaceContainerLow,
               indicatorColor: paleViolet,
               destinations: const [
                 NavigationDestination(
@@ -502,9 +725,9 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   );
   Widget sidebar() => Container(
     width: 214,
-    decoration: const BoxDecoration(
-      color: Colors.white,
-      border: Border(right: BorderSide(color: Color(0xFFE8E8E2))),
+    decoration: BoxDecoration(
+      color: colors.surfaceContainerLow,
+      border: Border(right: BorderSide(color: colors.outlineVariant)),
     ),
     padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 32),
     child: Column(
@@ -512,7 +735,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
       children: [
         logo(),
         const SizedBox(height: 9),
-        const Text(
+        Text(
           'A little more balance.',
           style: TextStyle(color: muted, fontSize: 12),
         ),
@@ -563,7 +786,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
             color: paper,
             borderRadius: BorderRadius.circular(18),
           ),
-          child: const Column(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Icon(Icons.favorite_outline, color: violet, size: 22),
@@ -583,11 +806,11 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
         const SizedBox(height: 24),
         Row(
           children: [
-            const Icon(Icons.lock_outline, size: 14, color: muted),
+            Icon(Icons.lock_outline, size: 14, color: muted),
             const SizedBox(width: 7),
             Text(
               kIsWeb ? 'Saved in this browser' : 'Saved on this device',
-              style: const TextStyle(color: muted, fontSize: 10),
+              style: TextStyle(color: muted, fontSize: 10),
             ),
           ],
         ),
@@ -596,8 +819,8 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   );
   Widget topbar(bool wide) => Container(
     padding: EdgeInsets.symmetric(horizontal: wide ? 36 : 20, vertical: 18),
-    decoration: const BoxDecoration(
-      border: Border(bottom: BorderSide(color: Color(0xFFE8E8E2))),
+    decoration: BoxDecoration(
+      border: Border(bottom: BorderSide(color: colors.outlineVariant)),
     ),
     child: Row(
       children: [
@@ -610,7 +833,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               'ROOM FOR EVERYTHING',
               'PROGRESS, NOT PERFECTION',
             ][page],
-            style: const TextStyle(
+            style: TextStyle(
               color: muted,
               letterSpacing: 1.6,
               fontSize: 10,
@@ -621,13 +844,15 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
         if (wide)
           Text(
             DateFormat('EEEE, MMMM d').format(now),
-            style: const TextStyle(fontSize: 12, color: muted),
+            style: TextStyle(fontSize: 12, color: muted),
           ),
         const SizedBox(width: 18),
         IconButton(
           onPressed: busy ? null : enableAlerts,
           tooltip: data.alerts ? 'Disable shift alerts' : 'Enable shift alerts',
-          style: IconButton.styleFrom(backgroundColor: Colors.white),
+          style: IconButton.styleFrom(
+            backgroundColor: colors.surfaceContainerLow,
+          ),
           icon: Icon(
             data.alerts
                 ? Icons.notifications_active_outlined
@@ -639,9 +864,11 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
           const SizedBox(width: 8),
           IconButton(
             onPressed: widget.onMenu,
-            tooltip: 'Open account menu',
-            style: IconButton.styleFrom(backgroundColor: Colors.white),
-            icon: const Icon(Icons.menu_rounded, color: ink),
+            tooltip: 'Settings',
+            style: IconButton.styleFrom(
+              backgroundColor: colors.surfaceContainerLow,
+            ),
+            icon: Icon(Icons.menu_rounded, color: ink),
           ),
         ],
       ],
@@ -661,7 +888,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
         children: [
           Text(
             eyebrow,
-            style: const TextStyle(
+            style: TextStyle(
               color: violet,
               fontSize: 10,
               fontWeight: FontWeight.w800,
@@ -762,9 +989,11 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     final color = interrupted
         ? amber
         : s == null || focus
-        ? violet
+        ? const Color(0xFF6450CA)
         : green;
-    final fg = interrupted || (s != null && !focus) ? ink : Colors.white;
+    final fg = interrupted || (s != null && !focus)
+        ? const Color(0xFF24232C)
+        : Colors.white;
     final seconds = interrupted
         ? now.difference(s!.interruption!.start).inSeconds
         : data.sessionSeconds(now);
@@ -996,13 +1225,13 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                     focus
                         ? Icons.center_focus_strong_rounded
                         : Icons.child_care_rounded,
-                    color: focus ? violet : ink,
+                    color: focus ? violet : const Color(0xFF24232C),
                     size: 25,
                   ),
                   const Spacer(),
                   Icon(
                     current ? Icons.check_circle_outline : Icons.arrow_outward,
-                    color: focus ? violet : ink,
+                    color: focus ? violet : const Color(0xFF24232C),
                     size: 19,
                   ),
                 ],
@@ -1015,7 +1244,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
-                  color: focus ? violet : ink,
+                  color: focus ? violet : const Color(0xFF24232C),
                 ),
               ),
             ],
@@ -1047,7 +1276,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                   data.childNames.length == 1
                       ? 'Baby Time starts when you choose ${data.childNames.first}.'
                       : 'Choose one child or All children.',
-                  style: const TextStyle(color: muted),
+                  style: TextStyle(color: muted),
                 ),
                 const SizedBox(height: 24),
                 for (final baby in data.availableBabies)
@@ -1057,7 +1286,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                       onPressed: () => Navigator.pop(context, baby),
                       style: FilledButton.styleFrom(
                         backgroundColor: green,
-                        foregroundColor: ink,
+                        foregroundColor: const Color(0xFF24232C),
                         minimumSize: const Size(0, 84),
                       ),
                       icon: const Icon(Icons.child_care, size: 28),
@@ -1102,8 +1331,10 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               style: const TextStyle(fontSize: 23, fontWeight: FontWeight.w800),
             ),
             style: FilledButton.styleFrom(
-              backgroundColor: interrupted ? violet : amber,
-              foregroundColor: interrupted ? Colors.white : ink,
+              backgroundColor: interrupted ? const Color(0xFF6450CA) : amber,
+              foregroundColor: interrupted
+                  ? Colors.white
+                  : const Color(0xFF24232C),
               minimumSize: const Size(0, 88),
             ),
           ),
@@ -1126,7 +1357,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
             style: OutlinedButton.styleFrom(
               minimumSize: const Size(0, 64),
               foregroundColor: ink,
-              side: const BorderSide(color: Color(0xFFDAD8E2)),
+              side: BorderSide(color: colors.outlineVariant),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
               ),
@@ -1141,9 +1372,9 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     width: double.infinity,
     padding: const EdgeInsets.all(24),
     decoration: BoxDecoration(
-      color: Colors.white,
+      color: colors.surfaceContainerLow,
       borderRadius: BorderRadius.circular(22),
-      border: Border.all(color: const Color(0xFFE8E8E2)),
+      border: Border.all(color: colors.outlineVariant),
     ),
     child: child,
   );
@@ -1176,7 +1407,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               child: stat(
                 durationText(data.lostSeconds(now, now)),
                 'Interrupted',
-                const Color(0xFF9D6616),
+                interruptionInk,
               ),
             ),
           ],
@@ -1202,7 +1433,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
         ),
       ),
       const SizedBox(height: 5),
-      Text(label, style: const TextStyle(color: muted, fontSize: 11)),
+      Text(label, style: TextStyle(color: muted, fontSize: 11)),
     ],
   );
   Widget timelineCard() {
@@ -1222,11 +1453,11 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               IconButton(
                 onPressed: () => editShift(day: now),
                 tooltip: 'Add a shift',
-                icon: const Icon(Icons.add, color: violet),
+                icon: Icon(Icons.add, color: violet),
               ),
             ],
           ),
-          const Text(
+          Text(
             'A rhythm, not a rigid routine.',
             style: TextStyle(fontSize: 12, color: muted),
           ),
@@ -1239,11 +1470,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                 color: paper,
                 borderRadius: BorderRadius.circular(14),
               ),
-              child: const Icon(
-                Icons.wb_twilight_rounded,
-                color: violet,
-                size: 36,
-              ),
+              child: Icon(Icons.wb_twilight_rounded, color: violet, size: 36),
             ),
             const SizedBox(height: 18),
             const Text(
@@ -1251,7 +1478,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               style: TextStyle(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
-            const Text(
+            Text(
               'Map out a shift, or start one now. There’s no perfect plan.',
               style: TextStyle(color: muted, fontSize: 12, height: 1.7),
             ),
@@ -1304,7 +1531,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                     children: [
                       Text(
                         '${timeText(s.start)} – ${timeText(s.end)}',
-                        style: const TextStyle(color: muted, fontSize: 10),
+                        style: TextStyle(color: muted, fontSize: 10),
                       ),
                       const SizedBox(height: 6),
                       Text(
@@ -1318,11 +1545,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                   ),
                 ),
                 if (isActive)
-                  const Icon(
-                    Icons.radio_button_checked,
-                    color: violet,
-                    size: 17,
-                  )
+                  Icon(Icons.radio_button_checked, color: violet, size: 17)
                 else
                   Icon(
                     s.kind == ShiftKind.focus
@@ -1342,7 +1565,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   Widget reminderCard() => Container(
     padding: const EdgeInsets.all(22),
     decoration: BoxDecoration(
-      color: const Color(0xFFEEEFE6),
+      color: colors.surfaceContainer,
       borderRadius: BorderRadius.circular(20),
     ),
     child: Column(
@@ -1366,7 +1589,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
           ],
         ),
         const SizedBox(height: 10),
-        const Text(
+        Text(
           'A nudge 10 minutes before your shift ends, and another when it’s time to hand off.',
           style: TextStyle(fontSize: 12, color: muted, height: 1.7),
         ),
@@ -1448,7 +1671,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
       const SizedBox(height: 22),
       if (data.onDay(selectedDay).isEmpty)
         card(
-          child: const Padding(
+          child: Padding(
             padding: EdgeInsets.symmetric(vertical: 40),
             child: Column(
               children: [
@@ -1470,7 +1693,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
       else
         ...data.onDay(selectedDay).map(shiftTile),
       const SizedBox(height: 16),
-      const Text(
+      Text(
         'Tap a block to edit it or add it to Google Calendar. Calendar export opens a draft for you to save; it is not two-way sync.',
         style: TextStyle(color: muted, fontSize: 12, height: 1.7),
       ),
@@ -1591,7 +1814,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                     ? DateFormat.yMMMMd().format(from)
                     : '${DateFormat.yMMMd().format(from)} – ${DateFormat.yMMMd().format(through)}',
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: muted),
+                style: TextStyle(color: muted),
               ),
             ),
             IconButton(
@@ -1631,7 +1854,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 'Total work = actual focus + interrupted time.',
                 style: TextStyle(color: muted, fontSize: 12),
               ),
@@ -1649,7 +1872,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               const SizedBox(height: 25),
               chartBar('Interrupted time', lost, largest, amber),
               const SizedBox(height: 24),
-              const Text(
+              Text(
                 'Actual time includes active sessions and updates live.',
                 style: TextStyle(color: muted, fontSize: 11),
               ),
@@ -1664,11 +1887,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                 child: stat(durationText(actual), 'Actual focus', violet),
               ),
               Expanded(
-                child: stat(
-                  durationText(lost),
-                  'Interrupted',
-                  const Color(0xFF9D6616),
-                ),
+                child: stat(durationText(lost), 'Interrupted', interruptionInk),
               ),
               Expanded(child: stat(durationText(total), 'Total work', ink)),
             ],
@@ -1686,7 +1905,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               const SizedBox(height: 8),
               Text(
                 'Total childcare: ${durationText(babyTotal)}',
-                style: const TextStyle(color: muted),
+                style: TextStyle(color: muted),
               ),
               const SizedBox(height: 24),
               for (final baby in data.availableBabies) ...[
@@ -1694,11 +1913,11 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                   data.babyName(baby),
                   data.babySeconds(from, now, baby: baby, endDay: through),
                   max(60, babyTotal),
-                  const Color(0xFF789638),
+                  careInk,
                 ),
                 const SizedBox(height: 20),
               ],
-              const Text(
+              Text(
                 '“All children” counts once in total childcare and also appears in each child’s individual time.',
                 style: TextStyle(color: muted, fontSize: 11, height: 1.5),
               ),
@@ -1706,7 +1925,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               if (unassigned > 0)
                 Text(
                   'Earlier childcare (child not recorded): ${durationText(unassigned)}',
-                  style: const TextStyle(color: muted, fontSize: 12),
+                  style: TextStyle(color: muted, fontSize: 12),
                 ),
             ],
           ),
@@ -1718,7 +1937,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
         ),
         const SizedBox(height: 14),
         if (interruptions.isEmpty)
-          const Text(
+          Text(
             'No interruptions logged for this period.',
             style: TextStyle(color: muted),
           )
@@ -1728,7 +1947,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               contentPadding: EdgeInsets.zero,
               leading: const CircleAvatar(
                 backgroundColor: Color(0xFFFAEBCD),
-                child: Icon(Icons.pause, color: ink),
+                child: Icon(Icons.pause, color: Color(0xFF24232C)),
               ),
               title: Text(
                 '${DateFormat.MMMd().format(i.start)} · ${timeText(i.start)} – ${i.end == null ? 'in progress' : timeText(i.end!)}',
@@ -1824,7 +2043,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                   const SizedBox(height: 8),
                   Text(
                     DateFormat('EEEE, MMMM d').format(base),
-                    style: const TextStyle(color: muted),
+                    style: TextStyle(color: muted),
                   ),
                   const SizedBox(height: 24),
                   SegmentedButton<ShiftKind>(
@@ -1953,7 +2172,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                     ],
                   ),
                   if (active)
-                    const Padding(
+                    Padding(
                       padding: EdgeInsets.only(top: 15),
                       child: Text(
                         'This shift is active. Use Push 15 Mins to extend it, or end it before editing.',
@@ -1965,7 +2184,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                       padding: const EdgeInsets.only(top: 14),
                       child: Text(
                         validation!,
-                        style: const TextStyle(color: Colors.red),
+                        style: TextStyle(color: colors.error),
                       ),
                     ),
                   const SizedBox(height: 24),
@@ -2028,9 +2247,9 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                               message: 'Schedule block removed. Logged time is kept.',
                             );
                           },
-                          child: const Text(
+                          child: Text(
                             'Delete shift',
-                            style: TextStyle(color: Color(0xFFAD423A)),
+                            style: TextStyle(color: colors.error),
                           ),
                         ),
                       ),

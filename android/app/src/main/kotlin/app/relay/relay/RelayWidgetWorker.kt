@@ -71,13 +71,17 @@ class RelayWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
                 val snapshot = (completion?.get("snapshot") as? Map<*, *>)
                     ?.entries?.associate { it.key.toString() to it.value }
                 if (snapshot?.get("context") == source) {
-                    RelayWidgetProvider.updateSnapshot(applicationContext, snapshot, source)
+                    val update = snapshot.toMutableMap()
+                    (completion["syncPending"] as? Boolean)?.let { update["syncPending"] = it }
+                    (completion["syncBlocked"] as? Boolean)?.let { update["syncBlocked"] = it }
+                    RelayWidgetProvider.updateSnapshot(applicationContext, update, source)
                 }
                 val error = if (completion?.get("success") == true) completion["error"] as? String
                     else (completion?.get("error") as? String)
                         ?: "Save unconfirmed. Open Relay to refresh."
                 RelayWidgetProvider.reportResult(applicationContext, source, error, requestId)
                 if (completion?.get("success") == true) {
+                    RelayCloudSyncWorker.enqueueIfNeeded(applicationContext)
                     applicationContext.sendBroadcast(Intent("app.relay.relay.widget.STATE_CHANGED")
                         .setPackage(applicationContext.packageName))
                 }

@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'alerts.dart';
+import 'account_cache.dart';
 import 'cloud.dart';
 import 'home_widget.dart';
 import 'model.dart';
@@ -75,6 +76,29 @@ Future<void> runWidgetBackground({
       }
     }
 
+    var syncPending = false;
+    var syncBlocked = false;
+    String? syncMessage;
+    if (store is CloudStore) {
+      try {
+        syncPending = await store.hasPendingChanges();
+      } catch (_) {
+        // A confirmed local write stays successful even if its status cannot
+        // be re-read. Ask the independent worker to check it conservatively.
+        syncPending = true;
+      }
+      final phase = store.syncStatus.value.phase;
+      syncBlocked =
+          phase == CloudSyncPhase.conflict ||
+          phase == CloudSyncPhase.needsSignIn ||
+          phase == CloudSyncPhase.error;
+      if (syncPending) {
+        syncMessage = syncBlocked
+            ? 'Saved on this device. Open Relay to review syncing.'
+            : 'Saved on this device. Waiting to sync.';
+      }
+    }
+
     // A successful save is final. Notification permission/scheduling problems
     // must never turn it into a retry that applies the same tap a second time.
     String? reminderMessage;
@@ -83,12 +107,20 @@ Future<void> runWidgetBackground({
       await alerts.initialize().timeout(_operationTimeout);
       await alerts.sync(loaded).timeout(_operationTimeout);
     } catch (_) {
-      reminderMessage = 'Saved. Open Relay to check shift reminders.';
+      reminderMessage = syncPending
+          ? 'Saved on this device. Open Relay to check syncing and shift reminders.'
+          : 'Saved. Open Relay to check shift reminders.';
     }
     completion = {
       'success': true,
-      'snapshot': widgetSnapshot(loaded, context, DateTime.now()),
-      'error': ?reminderMessage,
+      'snapshot': {
+        ...widgetSnapshot(loaded, context, DateTime.now()),
+        'syncPending': syncPending,
+        'syncBlocked': syncBlocked,
+      },
+      'syncPending': syncPending,
+      'syncBlocked': syncBlocked,
+      'error': ?(reminderMessage ?? syncMessage),
     };
   } catch (error) {
     // After any unacknowledged save, the server/disk may already have committed.
@@ -116,39 +148,44 @@ Future<void> runWidgetBackground({
 }
 
 Future<RelayStore> _openStore(String source) async =>
-    source == 'local' ? RelayStore() : _cloudStore(source);
+    source == 'local' ? RelayStore() : openWidgetCloudStore(source);
 
-Future<CloudStore> _cloudStore(String source) async {
-  await Supabase.initialize(
-    url: relaySupabaseUrl,
-    publishableKey: relayPublishableKey,
-    // A widget cannot handle a browser callback and has no Activity attached.
-    authOptions: const FlutterAuthClientOptions(detectSessionInUri: false),
-    debug: false,
-  ).timeout(_operationTimeout);
-  final client = Supabase.instance.client;
-  final session = await client.auth.getSession().timeout(_operationTimeout);
-  final userId = session?.user.id;
+Future<CloudStore> openWidgetCloudStore(
+  String source, {
+  SupabaseClient? client,
+  AccountContextCache contextCache = const AccountContextCache(),
+}) async {
+  if (client == null) {
+    await Supabase.initialize(
+      url: relaySupabaseUrl,
+      publishableKey: relayPublishableKey,
+      // A widget cannot handle a browser callback and has no Activity attached.
+      authOptions: const FlutterAuthClientOptions(detectSessionInUri: false),
+      debug: false,
+    ).timeout(_operationTimeout);
+  }
+  final activeClient = client ?? Supabase.instance.client;
+  // initialize restores the saved local session before returning. An expired
+  // access token may refresh later, but its owner can keep tracking offline.
+  final userId = activeClient.auth.currentUser?.id;
   if (userId == null || source != 'cloud:$userId') {
-    throw const _WidgetJobException(
-      'Sign in to Relay to reconnect this widget.',
-    );
+    throw CloudSaveException('Sign in to Relay to reconnect this widget.');
   }
 
-  // Read the current family configuration rather than trusting old child names
-  // cached by a launcher widget or by the foreground Flutter engine.
-  final member = await client
-      .from('household_members')
-      .select('household_id')
-      .eq('user_id', userId)
-      .single()
-      .timeout(_operationTimeout);
-  final household = await client
-      .from('households')
-      .select('child_names, child_one, child_two')
-      .eq('id', member['household_id'])
-      .single()
-      .timeout(_operationTimeout);
+  var cached = await contextCache.load(userId);
+  if (cached == null) {
+    cached = await fetchAccountContext(activeClient, userId);
+    if (cached == null) {
+      throw CloudSaveException(
+        'Open Relay online once to prepare this account for offline tracking.',
+      );
+    }
+    await contextCache.save(cached);
+  }
+  if (activeClient.auth.currentUser?.id != userId) {
+    throw CloudSaveException('Sign in to Relay to reconnect this widget.');
+  }
+  final household = cached.household;
   final configured = household['child_names'];
   final names = configured is List && configured.isNotEmpty
       ? List<String>.from(configured)
@@ -156,7 +193,12 @@ Future<CloudStore> _cloudStore(String source) async {
           household['child_one'] as String? ?? 'Baby 1',
           household['child_two'] as String? ?? 'Baby 2',
         ];
-  return CloudStore(client, userId, names);
+  return CloudStore(
+    activeClient,
+    userId,
+    names,
+    householdId: household['id'] as String,
+  );
 }
 
 String _errorMessage(Object error) {

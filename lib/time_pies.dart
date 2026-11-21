@@ -18,6 +18,12 @@ class TimePies extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final workColor = dark ? const Color(0xFFC4B6FF) : const Color(0xFF6450CA);
+    final babyColor = dark ? const Color(0xFFBCD88E) : const Color(0xFF456B24);
+    final interruptionColor = dark
+        ? const Color(0xFFF3C879)
+        : const Color(0xFF985E00);
     final work = data.totalWorkSeconds(day, now, endDay: endDay);
     final baby = data.babySeconds(day, now, endDay: endDay);
     final daily = _PieCard(
@@ -25,8 +31,8 @@ class TimePies extends StatelessWidget {
       description: 'Share of logged time for the selected period. Untracked time is excluded.',
       empty: 'Start a work or Baby Time session to see your daily split.',
       slices: [
-        _Slice('Work (including interruptions)', work, const Color(0xFF6450CA)),
-        _Slice('Baby Time', baby, const Color(0xFF456B24)),
+        _Slice('Work (including interruptions)', work, workColor),
+        _Slice('Baby Time', baby, babyColor),
       ],
     );
     final focus = _PieCard(
@@ -37,12 +43,12 @@ class TimePies extends StatelessWidget {
         _Slice(
           'Actual focus',
           data.actualSeconds(day, now, endDay: endDay),
-          const Color(0xFF6450CA),
+          workColor,
         ),
         _Slice(
           'Interrupted',
           data.lostSeconds(day, now, endDay: endDay),
-          const Color(0xFFA96100),
+          interruptionColor,
         ),
       ],
     );
@@ -86,14 +92,15 @@ class _PieCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     final total = slices.fold(0, (sum, slice) => sum + slice.seconds);
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: colors.surfaceContainerLow,
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: const Color(0xFFE8E8E2)),
+        border: Border.all(color: colors.outlineVariant),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -105,8 +112,8 @@ class _PieCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             description,
-            style: const TextStyle(
-              color: Color(0xFF73727C),
+            style: TextStyle(
+              color: colors.onSurfaceVariant,
               fontSize: 12,
               height: 1.5,
             ),
@@ -120,17 +127,26 @@ class _PieCard extends StatelessWidget {
               child: SizedBox(
                 width: 210,
                 height: 210,
-                child: CustomPaint(painter: _PiePainter(slices, total)),
+                child: CustomPaint(
+                  painter: _PiePainter(
+                    slices,
+                    total,
+                    emptyColor: colors.surfaceContainerHigh,
+                    labelColor: colors.brightness == Brightness.dark
+                        ? const Color(0xFF24232C)
+                        : Colors.white,
+                  ),
+                ),
               ),
             ),
           ),
           const SizedBox(height: 20),
           Text(
             total == 0 ? empty : '${_time(total)} total logged',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
               height: 1.5,
-              color: Color(0xFF73727C),
+              color: colors.onSurfaceVariant,
             ),
           ),
           const SizedBox(height: 14),
@@ -171,8 +187,8 @@ class _PieCard extends StatelessWidget {
                       ),
                       Text(
                         _time(slice.seconds),
-                        style: const TextStyle(
-                          color: Color(0xFF73727C),
+                        style: TextStyle(
+                          color: colors.onSurfaceVariant,
                           fontSize: 11,
                         ),
                       ),
@@ -188,9 +204,15 @@ class _PieCard extends StatelessWidget {
 }
 
 class _PiePainter extends CustomPainter {
-  _PiePainter(this.slices, this.total);
+  _PiePainter(
+    this.slices,
+    this.total, {
+    required this.emptyColor,
+    required this.labelColor,
+  });
   final List<_Slice> slices;
   final int total;
+  final Color emptyColor, labelColor;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -198,11 +220,7 @@ class _PiePainter extends CustomPainter {
     final radius = min(size.width, size.height) / 2 - 4;
     final rect = Rect.fromCircle(center: center, radius: radius);
     if (total == 0) {
-      canvas.drawCircle(
-        center,
-        radius,
-        Paint()..color = const Color(0xFFE8E8E2),
-      );
+      canvas.drawCircle(center, radius, Paint()..color = emptyColor);
       return;
     }
     var start = -pi / 2;
@@ -219,8 +237,8 @@ class _PiePainter extends CustomPainter {
         final label = TextPainter(
           text: TextSpan(
             text: '${(fraction * 100).toStringAsFixed(1)}%',
-            style: const TextStyle(
-              color: Colors.white,
+            style: TextStyle(
+              color: labelColor,
               fontSize: 15,
               fontWeight: FontWeight.w800,
             ),
@@ -236,6 +254,8 @@ class _PiePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _PiePainter oldDelegate) =>
       total != oldDelegate.total ||
+      emptyColor != oldDelegate.emptyColor ||
+      labelColor != oldDelegate.labelColor ||
       slices.asMap().entries.any(
         (e) => e.value.seconds != oldDelegate.slices[e.key].seconds,
       );

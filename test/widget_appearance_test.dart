@@ -26,7 +26,13 @@ class _AppearanceWidget extends RelayHomeWidget {
   @override
   bool get supported => false;
   @override
-  Future<void> sync(RelayState state, String context, DateTime now) async {
+  Future<void> sync(
+    RelayState state,
+    String context,
+    DateTime now, {
+    bool? syncPending,
+    bool? syncBlocked,
+  }) async {
     if (failSync) throw StateError('Launcher unavailable');
     source = context;
     synced = state.widgetColors;
