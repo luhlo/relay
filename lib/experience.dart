@@ -453,7 +453,7 @@ class _RelayExperienceSettingsState extends State<RelayExperienceSettings> {
             onTap: () => showRelayIntroduction(context),
           ),
           ListTile(
-            leading: const Icon(Icons.auto_awesome_outlined),
+            leading: const Icon(Icons.lightbulb_outline),
             title: const Text('What’s new'),
             subtitle: const Text('Version $relayFeatureReleaseVersion'),
             onTap: () => showRelayWhatsNew(context),
