@@ -37,6 +37,7 @@ jobs:
       - name: Build PWA
         run: |
           flutter build web --release --base-href / --pwa-strategy=none
+          python3 -m unittest discover -s tool -p 'test_web_build.py'
           python3 tool/finish_web_build.py
           node tool/test_service_worker.mjs build/web
 

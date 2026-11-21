@@ -3,7 +3,10 @@ import {readFile, access} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import vm from 'node:vm';
 
-const source = await readFile(new URL('../web/relay-sw.js', import.meta.url), 'utf8');
+const buildDirectory = globalThis.process?.argv?.[2];
+const source = await readFile(buildDirectory
+  ? resolve(buildDirectory, 'relay-sw.js')
+  : new URL('../web/relay-sw.js', import.meta.url), 'utf8');
 const legacy = await readFile(new URL('legacy_service_worker.js', import.meta.url), 'utf8');
 const scope = 'https://relay.example.invalid/relay/';
 const handlers = new Map(), stores = new Map();
@@ -86,10 +89,12 @@ const upgradeContext = vm.createContext({importScripts: path => {
 vm.runInContext(legacy, upgradeContext);
 assert(legacyInstalled);
 
-const buildDirectory = globalThis.process?.argv?.[2];
 if (buildDirectory) {
   const core = vm.runInContext('CORE', context);
   for (const file of core) await access(resolve(buildDirectory, file === './' ? 'index.html' : file));
+  const entrypoints = core.filter(file => /^relay-(main|bootstrap)-[a-f0-9]{12}\.js$/.test(file));
+  assert.equal(entrypoints.length, 2, 'Versioned entrypoints must be precached');
+  for (const file of entrypoints) assert.match(await get(file), /cached:/);
   console.log(`PASS: all ${core.length} app-shell files exist in the web build`);
 }
 console.log('PASS: offline navigation, renderer, private-request isolation, query-token exclusion, public asset caching, failed update recovery, scoped cache cleanup, legacy PWA upgrade');
