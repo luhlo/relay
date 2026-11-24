@@ -5,6 +5,7 @@ import android.app.AlarmManager
 import android.app.Application
 import android.app.Notification
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -149,6 +150,51 @@ class RelayTimerGuardTest {
         val oldAccount = Intent(shadowOf(notice.actions[1].actionIntent).savedIntent)
         snapshot(guard(), sourceId = "cloud:someone-else")
         assertNull(RelayTimerGuard.consumeRequest(context, oldAccount))
+    }
+
+    @Test
+    fun retainedCheckInPendingIntentsCannotRetargetToAnotherSessionOrAccount() {
+        for (change in listOf("session", "account", "reminder")) {
+            RelayWidgetProvider.clear(context)
+            val reminder = System.currentTimeMillis()
+            snapshot(guard(reminder = reminder))
+            val oldNotice = requireNotNull(shadowOf(manager).getNotification(RelayTimerGuard.CHECK_IN_ID))
+            val retained = oldNotice.actions.map { it.actionIntent }
+
+            snapshot(guard(
+                reminder = reminder + 1000,
+                session = if (change == "session") "2026-11-01T18:00:00.000Z" else started,
+            ), sourceId = if (change == "account") "cloud:another-parent" else source)
+            val current = requireNotNull(shadowOf(manager).getNotification(RelayTimerGuard.CHECK_IN_ID))
+            for ((index, oldAction) in retained.withIndex()) {
+                assertNotEquals("A retained action must keep its original identity", oldAction, current.actions[index].actionIntent)
+                try {
+                    oldAction.send()
+                    fail("A stale $change action must be cancelled rather than execute with new extras")
+                } catch (_: PendingIntent.CanceledException) { }
+            }
+            assertNull(shadowOf(context).nextStartedActivity)
+        }
+    }
+
+    @Test
+    fun consumingOrClearingCheckInCancelsBothRetainedActions() {
+        for (consume in listOf(true, false)) {
+            snapshot(guard(reminder = System.currentTimeMillis()))
+            val notice = requireNotNull(shadowOf(manager).getNotification(RelayTimerGuard.CHECK_IN_ID))
+            val retained = notice.actions.map { it.actionIntent }
+            if (consume) {
+                assertEquals("confirmTimer", RelayTimerGuard.consumeRequest(context,
+                    Intent(shadowOf(retained[0]).savedIntent))?.get("action"))
+            } else RelayWidgetProvider.clear(context)
+            for (action in retained) {
+                try {
+                    action.send()
+                    fail("Both one-use check-in capabilities must be cancelled")
+                } catch (_: PendingIntent.CanceledException) { }
+            }
+            RelayWidgetProvider.clear(context)
+        }
     }
 
     @Test

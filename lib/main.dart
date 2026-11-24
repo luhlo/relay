@@ -15,12 +15,14 @@ import 'storage.dart';
 import 'time_pies.dart';
 import 'trends.dart';
 import 'account.dart';
+import 'account_session_guard.dart';
 import 'cloud.dart';
 import 'cloud_sync_ui.dart';
 import 'cloud_sync_background.dart';
 import 'connection_events.dart';
 import 'diagnostics.dart';
 import 'experience.dart';
+import 'rating_prompt.dart';
 import 'home_widget.dart';
 import 'widget_background.dart';
 import 'timer_guard.dart';
@@ -120,12 +122,18 @@ class RelayHome extends StatefulWidget {
     this.readOnly = false,
     this.onMenu,
     this.homeWidget,
+    this.ratingPrompter,
+    this.observationTime,
   });
   final bool readOnly;
   final RelayStore? store;
   final ShiftAlerts? alerts;
   final VoidCallback? onMenu;
   final RelayHomeWidget? homeWidget;
+  final RelayRatingPrompter? ratingPrompter;
+
+  /// Read-only reports are snapshots, so active sessions stop at fetch time.
+  final DateTime? observationTime;
   @override
   State<RelayHome> createState() => _RelayHomeState();
 }
@@ -145,6 +153,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   late final store = widget.store ?? RelayStore();
   late final alerts = widget.alerts ?? ShiftAlerts();
   late final homeWidget = widget.homeWidget ?? RelayHomeWidget.instance;
+  late final ratingPrompter = widget.ratingPrompter ?? RelayRatingPrompter();
   String get widgetContext =>
       store is CloudStore ? 'cloud:${(store as CloudStore).userId}' : 'local';
   bool refreshWhenIdle = false;
@@ -164,6 +173,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    now = widget.observationTime?.toLocal() ?? DateTime.now();
     WidgetsBinding.instance.addObserver(this);
     if (store is CloudStore && !widget.readOnly) {
       connectionUpdates = connectionRestoredEvents().listen(
@@ -195,22 +205,24 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
       });
     }
     load();
-    timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() => now = DateTime.now());
-      if (mounted &&
-          !loading &&
-          !busy &&
-          !loadFailed &&
-          !widget.readOnly &&
-          ModalRoute.of(context)?.isCurrent == true &&
-          data.active != null) {
-        final guard = timerGuardSnapshot(data, now);
-        final next = guard?['nextEventAtMillis'] as int?;
-        if (next != null && now.millisecondsSinceEpoch >= next) {
-          change(() => updateTimerGuard(data, now));
+    if (widget.observationTime == null) {
+      timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() => now = DateTime.now());
+        if (mounted &&
+            !loading &&
+            !busy &&
+            !loadFailed &&
+            !widget.readOnly &&
+            ModalRoute.of(context)?.isCurrent == true &&
+            data.active != null) {
+          final guard = timerGuardSnapshot(data, now);
+          final next = guard?['nextEventAtMillis'] as int?;
+          if (next != null && now.millisecondsSinceEpoch >= next) {
+            change(() => updateTimerGuard(data, now));
+          }
         }
-      }
-    });
+      });
+    }
   }
 
   Future<void> load({bool silent = false}) async {
@@ -228,6 +240,12 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     });
     try {
       data = await store.load();
+      if (widget.readOnly && widget.observationTime != null) {
+        // Historical cloud copies may contain an open timer from an offline
+        // device. Apply its safety limits to a display copy, never the source.
+        data = RelayState.fromJson(data.toJson());
+        updateTimerGuard(data, now);
+      }
       if (!widget.readOnly && updateTimerGuard(data, DateTime.now()).changed) {
         await store.save(data);
       }
@@ -315,11 +333,15 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     await Navigator.push<void>(
       context,
       MaterialPageRoute(
-        builder: (_) => CloudSyncDetailsPage(
-          store: store as CloudStore,
-          onChanged: () async {
-            await load(silent: true);
-          },
+        builder: (_) => AccountSessionGuard(
+          client: (store as CloudStore).client,
+          expectedUserId: (store as CloudStore).userId,
+          child: CloudSyncDetailsPage(
+            store: store as CloudStore,
+            onChanged: () async {
+              await load(silent: true);
+            },
+          ),
         ),
       ),
     );
@@ -393,7 +415,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       unawaited(RelayDiagnostics.instance.flush());
       unawaited(syncCloud());
-      setState(() => now = DateTime.now());
+      setState(() => now = widget.observationTime?.toLocal() ?? DateTime.now());
       if (!widget.readOnly &&
           (homeWidget.supported || store is CloudStore) &&
           ModalRoute.of(context)?.isCurrent == true) {
@@ -425,7 +447,11 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> change(void Function() mutate, {String? message}) async {
+  Future<void> change(
+    void Function() mutate, {
+    String? message,
+    bool offerRating = false,
+  }) async {
     if (busy || loadFailed || widget.readOnly) return;
     setState(() => busy = true);
     final backup = data.toJson();
@@ -489,6 +515,31 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     if (refreshWhenIdle && mounted) {
       refreshWhenIdle = false;
       await load();
+    }
+    if (offerRating &&
+        mounted &&
+        data.active == null &&
+        data.sessions.isNotEmpty) {
+      final completed = data.sessions.last;
+      if (completed.start == previousSessionStart) {
+        unawaited(
+          ratingPrompter.afterSession(
+            context,
+            session: completed,
+            canShow: () =>
+                mounted &&
+                !loading &&
+                !busy &&
+                !loadFailed &&
+                !widget.readOnly &&
+                data.active == null &&
+                ModalRoute.of(context)?.isCurrent == true &&
+                (WidgetsBinding.instance.lifecycleState == null ||
+                    WidgetsBinding.instance.lifecycleState ==
+                        AppLifecycleState.resumed),
+          ),
+        );
+      }
     }
   }
 
@@ -669,6 +720,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
       const SizedBox(width: 10),
       const Text(
         'relay',
+        textScaler: TextScaler.noScaling,
         style: TextStyle(
           fontSize: 30,
           fontWeight: FontWeight.w800,
@@ -825,7 +877,13 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
     child: Row(
       children: [
         if (!wide)
-          logo()
+          Expanded(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: logo(),
+            ),
+          )
         else
           Text(
             [
@@ -840,7 +898,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               fontWeight: FontWeight.w700,
             ),
           ),
-        const Spacer(),
+        if (wide) const Spacer(),
         if (wide)
           Text(
             DateFormat('EEEE, MMMM d').format(now),
@@ -1022,20 +1080,21 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                 decoration: BoxDecoration(color: fg, shape: BoxShape.circle),
               ),
               const SizedBox(width: 8),
-              Text(
-                interrupted
-                    ? 'LIFE HAPPENS'
-                    : s == null
-                    ? 'A FRESH START'
-                    : 'CURRENT SHIFT',
-                style: TextStyle(
-                  color: fg.withValues(alpha: .85),
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.8,
+              Expanded(
+                child: Text(
+                  interrupted
+                      ? 'LIFE HAPPENS'
+                      : s == null
+                      ? 'A FRESH START'
+                      : 'CURRENT SHIFT',
+                  style: TextStyle(
+                    color: fg.withValues(alpha: .85),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.8,
+                  ),
                 ),
               ),
-              const Spacer(),
               Icon(
                 interrupted
                     ? Icons.pause_circle_outline
@@ -1172,18 +1231,21 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
                   ),
                 ),
                 if (s != null)
-                  TextButton(
-                    onPressed: busy
-                        ? null
-                        : () => change(
-                            () => data.finish(DateTime.now()),
-                            message: 'Shift complete. Your time is saved.',
-                          ),
-                    style: TextButton.styleFrom(
-                      foregroundColor: fg,
-                      minimumSize: const Size(48, 48),
+                  Flexible(
+                    child: TextButton(
+                      onPressed: busy
+                          ? null
+                          : () => change(
+                              () => data.finish(DateTime.now()),
+                              message: 'Shift complete. Your time is saved.',
+                              offerRating: true,
+                            ),
+                      style: TextButton.styleFrom(
+                        foregroundColor: fg,
+                        minimumSize: const Size(48, 48),
+                      ),
+                      child: const Text('End shift'),
                     ),
-                    child: const Text('End shift'),
                   ),
               ],
             ),
@@ -1626,8 +1688,8 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
             final d = await showDatePicker(
               context: context,
               initialDate: selectedDay,
-              firstDate: DateTime(2020),
-              lastDate: DateTime(2100),
+              firstDate: DateTime(min(2020, selectedDay.year)),
+              lastDate: DateTime(max(2100, selectedDay.year), 12, 31),
             );
             if (d != null) setState(() => selectedDay = d);
           },
@@ -1774,7 +1836,7 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               onPressed: () async {
                 final range = await showDateRangePicker(
                   context: context,
-                  firstDate: DateTime(min(1900, earliest.year)),
+                  firstDate: DateTime(min(1900, min(earliest.year, from.year))),
                   lastDate: dayStart(now),
                   initialDateRange: DateTimeRange(start: from, end: through),
                   helpText: 'Choose Insights dates',
@@ -1873,7 +1935,9 @@ class _RelayHomeState extends State<RelayHome> with WidgetsBindingObserver {
               chartBar('Interrupted time', lost, largest, amber),
               const SizedBox(height: 24),
               Text(
-                'Actual time includes active sessions and updates live.',
+                widget.observationTime == null
+                    ? 'Actual time includes active sessions and updates live.'
+                    : 'Active sessions are counted only up to the snapshot time.',
                 style: TextStyle(color: muted, fontSize: 11),
               ),
             ],

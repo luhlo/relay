@@ -52,6 +52,20 @@ clears that account's cache on the device completing deletion; clear storage on
 other devices separately. The cloud never receives recovery copies themselves.
 The browser-installed PWA does not include the native Android widget.
 
+## Household controls (1.19.0)
+
+The family owner can edit child count and optional names in **Settings → Children**,
+revoke pending invitations, and remove caregivers after confirmation. Blank names
+use Baby 1, Baby 2 and so on. Keep each child in the same numbered position.
+Older All children sessions remember which children were included when started.
+
+Removing a caregiver revokes shared household access while retaining their own
+private time history. **Your saved time** opens read-only device copies and cloud
+archives; joining another family starts a fresh shared record. Saved copies are
+never automatically imported into that family. Data already saved on other
+devices is not remotely erased. The widget baby selector also includes **Cancel**.
+See [backend contracts and validation](supabase/HOUSEHOLD_MANAGEMENT.md).
+
 ### Widget appearance and timer check-ins
 
 Open the account menu and choose **Widget appearance** to change Work Time,

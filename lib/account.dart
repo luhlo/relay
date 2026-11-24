@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'alerts.dart';
@@ -17,6 +18,8 @@ import 'timer_guard_settings.dart';
 import 'account_privacy.dart';
 import 'experience.dart';
 import 'account_cache.dart';
+import 'account_session_guard.dart';
+import 'household_management.dart';
 
 Future<bool> confirmRelayLogout(BuildContext context) async =>
     await showDialog<bool>(
@@ -120,6 +123,9 @@ class _AccountGateState extends State<AccountGate> with WidgetsBindingObserver {
   bool deletionRequested = kIsWeb && accountDeletionRequested(Uri.base);
   String? error;
   String? loadedUser;
+  // Keep setup fields and newly created invitation codes visible until the
+  // person explicitly continues. Quiet metadata refreshes must not replace it.
+  String? setupUser;
   int localRevision = 0;
   @override
   void initState() {
@@ -207,6 +213,7 @@ class _AccountGateState extends State<AccountGate> with WidgetsBindingObserver {
 
   Future<void> refresh({bool showLoading = true}) async {
     final uid = client.auth.currentUser?.id;
+    if (!showLoading && uid != null && setupUser == uid) return;
     if (!showLoading && refreshingContext) return;
     final generation = ++refreshGeneration;
     final sameAccount = uid != null && loadedUser == uid && store != null;
@@ -218,6 +225,7 @@ class _AccountGateState extends State<AccountGate> with WidgetsBindingObserver {
       // Quiet metadata retries keep the active timer screen mounted.
       if (sameAccount && showLoading) cloudRevision++;
       if (!sameAccount) {
+        if (uid != loadedUser) setupUser = null;
         member = null;
         household = null;
         store = null;
@@ -250,6 +258,7 @@ class _AccountGateState extends State<AccountGate> with WidgetsBindingObserver {
         if (!_isCurrent(uid, generation)) return;
         if (fresh == null) {
           final wasCached = member != null;
+          if (!wasCached) setupUser = uid;
           try {
             await contextCache.remove(uid);
           } catch (_) {
@@ -334,6 +343,11 @@ class _AccountGateState extends State<AccountGate> with WidgetsBindingObserver {
     );
   }
 
+  Future<void> finishHouseholdSetup() {
+    setupUser = null;
+    return refresh();
+  }
+
   Future<void> signOut() async {
     // Local sign-out also works offline and clears the saved Supabase session.
     await client.auth.signOut(scope: SignOutScope.local);
@@ -376,18 +390,48 @@ class _AccountGateState extends State<AccountGate> with WidgetsBindingObserver {
   }
 
   Future<void> openHousehold() async {
+    final openingStore = store;
+    final openingMember = member;
+    final openingHousehold = household;
+    if (openingStore == null ||
+        openingMember == null ||
+        openingHousehold == null ||
+        client.auth.currentUser?.id != openingStore.userId) {
+      return;
+    }
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => HouseholdAccount(
-          member: member!,
-          household: household!,
-          store: store!,
-          onSignOut: signOut,
+        builder: (_) => AccountSessionGuard(
+          client: client,
+          expectedUserId: openingStore.userId,
+          child: HouseholdAccount(
+            member: openingMember,
+            household: openingHousehold,
+            store: openingStore,
+            onSignOut: signOut,
+          ),
         ),
       ),
     );
     if (mounted && client.auth.currentUser != null) refresh();
+  }
+
+  Future<void> openSavedTime() async {
+    final userId = client.auth.currentUser?.id;
+    if (userId == null) return;
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AccountSessionGuard(
+          client: client,
+          expectedUserId: userId,
+          child: PersonalTimeHistoryPage(
+            service: HouseholdManagementService(client, userId),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -437,9 +481,11 @@ class _AccountGateState extends State<AccountGate> with WidgetsBindingObserver {
     }
     if (member == null) {
       return HouseholdSetup(
-        onDone: refresh,
+        client: client,
+        onDone: finishHouseholdSetup,
         onSignOut: signOut,
         onDeleteAccount: openAccountDeletion,
+        onViewSavedTime: openSavedTime,
       );
     }
     return RelayHome(
@@ -685,8 +731,7 @@ class _AuthFormState extends State<AuthForm> {
     if (!email.text.trim().contains('@') ||
         (!reset && !resend && password.text.length < 8)) {
       setState(
-        () => message =
-            'Enter an email address and a password with at least 8 characters.',
+        () => message = reset || resend ? 'Enter a valid email address.' : 'Enter an email address and a password with at least 8 characters.',
       );
       return;
     }
@@ -869,14 +914,19 @@ class HouseholdSetup extends StatefulWidget {
     required this.onDone,
     required this.onSignOut,
     this.onDeleteAccount,
+    this.client,
+    this.onViewSavedTime,
   });
   final Future<void> Function() onDone, onSignOut;
   final VoidCallback? onDeleteAccount;
+  final SupabaseClient? client;
+  final VoidCallback? onViewSavedTime;
   @override
   State<HouseholdSetup> createState() => _HouseholdSetupState();
 }
 
 class _HouseholdSetupState extends State<HouseholdSetup> {
+  SupabaseClient get client => widget.client ?? Supabase.instance.client;
   final parent = TextEditingController(),
       home = TextEditingController(),
       code = TextEditingController();
@@ -906,7 +956,7 @@ class _HouseholdSetupState extends State<HouseholdSetup> {
     });
     try {
       if (join) {
-        await Supabase.instance.client.rpc(
+        await client.rpc(
           'relay_join_household',
           params: {
             'invite_code': code.text.trim(),
@@ -921,7 +971,7 @@ class _HouseholdSetupState extends State<HouseholdSetup> {
                 ? 'Baby ${entry.$1 + 1}'
                 : entry.$2.text.trim(),
         ];
-        await Supabase.instance.client.rpc(
+        await client.rpc(
           'relay_create_household_v2',
           params: {
             'household_name': home.text.trim(),
@@ -935,7 +985,7 @@ class _HouseholdSetupState extends State<HouseholdSetup> {
           final address = entry.$2.text.trim();
           if (address.isEmpty) continue;
           try {
-            final invitation = await Supabase.instance.client.rpc(
+            final invitation = await client.rpc(
               'relay_invite_member',
               params: {
                 'member_email': address,
@@ -1053,6 +1103,12 @@ class _HouseholdSetupState extends State<HouseholdSetup> {
         : FormPage(
             title: join ? 'Join your household' : 'Your family’s space',
             children: [
+              if (widget.onViewSavedTime != null)
+                OutlinedButton.icon(
+                  onPressed: busy ? null : widget.onViewSavedTime,
+                  icon: const Icon(Icons.history),
+                  label: const Text('Your saved time'),
+                ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('I have an invitation code'),
@@ -1179,12 +1235,115 @@ class HouseholdAccount extends StatefulWidget {
     required this.household,
     required this.store,
     required this.onSignOut,
+    this.managementService,
   });
   final Map<String, dynamic> member, household;
   final CloudStore store;
   final Future<void> Function() onSignOut;
+  final HouseholdManagementService? managementService;
   @override
   State<HouseholdAccount> createState() => _HouseholdAccountState();
+}
+
+/// A read-only observation, not a live projection of another person's timer.
+/// Refresh is explicit and never writes another person's records to this device.
+class FamilyMemberInsightsPage extends StatefulWidget {
+  const FamilyMemberInsightsPage({
+    super.key,
+    required this.displayName,
+    required this.initialRecords,
+    required this.initialObservedAt,
+    required this.loadRecords,
+    this.clock = DateTime.now,
+  });
+
+  final String displayName;
+  final RelayState initialRecords;
+  final DateTime initialObservedAt;
+  final Future<RelayState> Function() loadRecords;
+  final DateTime Function() clock;
+
+  @override
+  State<FamilyMemberInsightsPage> createState() =>
+      _FamilyMemberInsightsPageState();
+}
+
+class _FamilyMemberInsightsPageState extends State<FamilyMemberInsightsPage> {
+  late RelayState records = RelayState.fromJson(widget.initialRecords.toJson());
+  late DateTime observedAt = widget.initialObservedAt;
+  int generation = 0;
+  bool refreshing = false;
+  String? error;
+
+  Future<void> refresh() async {
+    if (refreshing) return;
+    setState(() {
+      refreshing = true;
+      error = null;
+    });
+    try {
+      final latest = await widget.loadRecords();
+      if (!mounted) return;
+      setState(() {
+        records = RelayState.fromJson(latest.toJson());
+        observedAt = widget.clock();
+        generation++;
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          error = 'Could not refresh. Showing the last snapshot. Check your connection and try again.';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => refreshing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: Text('${widget.displayName} · Insights')),
+    body: Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 12, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Snapshot · ${DateFormat.yMMMd().add_jm().format(observedAt)}\nRefresh to see new activity.',
+                  key: const ValueKey('family-insights-snapshot-time'),
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Refresh family Insights',
+                onPressed: refreshing ? null : refresh,
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
+          ),
+        ),
+        if (refreshing) const LinearProgressIndicator(),
+        if (error != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            child: Text(
+              error!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ),
+        Expanded(
+          child: RelayHome(
+            key: ValueKey('family-insights-$generation'),
+            store: ReadOnlyStore(records),
+            readOnly: true,
+            observationTime: observedAt,
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class SignedInAccountEmail extends StatelessWidget {
@@ -1212,7 +1371,23 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
   late final TextEditingController familyName = TextEditingController(
     text: widget.household['name'] as String,
   );
+  late final childNames = [
+    for (var index = 0; index < 8; index++)
+      TextEditingController(
+        text: index < householdChildren(widget.household).length
+            ? householdChildren(widget.household)[index]
+            : '',
+      ),
+  ];
+  late int childCount = householdChildren(widget.household).length;
+  late final management =
+      widget.managementService ??
+      HouseholdManagementService(widget.store.client, widget.store.userId);
+  bool get isOwner => widget.member['role'] == 'owner';
   bool busy = false;
+  bool loadingMembers = false, loadingInvitations = false;
+  String? invitationError, invitationEmail, memberError;
+  List<HouseholdInvitation> pendingInvitations = [];
   bool personalTimeEnabled = false;
   int dailyPersonalHours = 3;
   bool loadingPersonalTime = true;
@@ -1228,12 +1403,16 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
       loadPersonalTimeSettings(widget.store.userId);
     }
     loadMembers();
+    if (isOwner) loadInvitations();
   }
 
   @override
   void dispose() {
     email.dispose();
     familyName.dispose();
+    for (final controller in childNames) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -1244,7 +1423,7 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
       return;
     }
     await run(() async {
-      await Supabase.instance.client.rpc(
+      await widget.store.client.rpc(
         'relay_update_household_name',
         params: {'new_name': name},
       );
@@ -1295,16 +1474,24 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
   }
 
   Future<void> loadMembers() async {
+    if (loadingMembers) return;
+    setState(() => loadingMembers = true);
     try {
-      final rows = await Supabase.instance.client
+      final rows = await widget.store.client
           .from('household_members')
           .select()
           .eq('household_id', widget.household['id'])
+          .eq('is_active', true)
           .timeout(const Duration(seconds: 8));
       final owner = rows.cast<Map<String, dynamic>>().where(
         (row) => row['role'] == 'owner',
       );
-      if (mounted) setState(() => members = rows);
+      if (mounted) {
+        setState(() {
+          members = rows;
+          memberError = null;
+        });
+      }
       if (owner.isNotEmpty) {
         if (widget.member['role'] != 'owner' || loadingPersonalTime) {
           await loadPersonalTimeSettings(owner.first['user_id'] as String);
@@ -1319,17 +1506,219 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
       if (mounted) {
         setState(() {
           loadingPersonalTime = false;
-          message = 'Family membership changes and other members’ Insights need a connection. Your own tracking stays available.';
+          memberError = 'Could not refresh family members. Showing the last loaded list. Your own tracking stays available.';
         });
+      }
+    } finally {
+      if (mounted) setState(() => loadingMembers = false);
+    }
+  }
+
+  Future<void> loadInvitations() async {
+    if (!isOwner || loadingInvitations) return;
+    setState(() => loadingInvitations = true);
+    try {
+      final rows = await management.invitations();
+      if (!mounted) return;
+      setState(() {
+        pendingInvitations = rows;
+        invitationError = null;
+        if (invitation != null && !rows.any((row) => row.code == invitation)) {
+          invitation = null;
+        }
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          invitationError = 'Could not refresh invitations. Showing the last loaded list. Refresh before creating or changing another invitation.';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => loadingInvitations = false);
+    }
+  }
+
+  Future<void> refreshHouseholdLists() async {
+    await Future.wait([loadMembers(), if (isOwner) loadInvitations()]);
+  }
+
+  bool get sameAccount =>
+      widget.store.client.auth.currentUser?.id == widget.store.userId;
+
+  Future<bool> confirmManagement({
+    required String title,
+    required String description,
+    required String button,
+  }) async {
+    if (!sameAccount || busy) return false;
+    BuildContext? dialogContext;
+    var accountChanged = false;
+    final subscription = widget.store.client.auth.onAuthStateChange.listen((_) {
+      if (sameAccount) return;
+      accountChanged = true;
+      final currentDialog = dialogContext;
+      if (currentDialog != null &&
+          currentDialog.mounted &&
+          ModalRoute.of(currentDialog)?.isCurrent == true) {
+        Navigator.pop(currentDialog, false);
+      }
+    });
+    try {
+      final approved = await showDialog<bool>(
+        context: context,
+        builder: (context) {
+          dialogContext = context;
+          if (accountChanged || !sameAccount) {
+            return AlertDialog(
+              title: const Text('Account changed'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Close'),
+                ),
+              ],
+            );
+          }
+          return AlertDialog(
+            title: Text(title),
+            content: Text(description),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: Text(button),
+              ),
+            ],
+          );
+        },
+      );
+      return approved == true && sameAccount && !accountChanged;
+    } finally {
+      unawaited(subscription.cancel());
+    }
+  }
+
+  Future<void> saveChildren() => run(() async {
+    final names = await management.updateChildren([
+      for (final controller in childNames.take(childCount)) controller.text,
+    ]);
+    if (!mounted) return;
+    widget.household['child_names'] = List<String>.of(names);
+    widget.household['child_one'] = names.first;
+    widget.household['child_two'] = names.length > 1 ? names[1] : 'Baby 2';
+    widget.store.childNames
+      ..clear()
+      ..addAll(names);
+    for (final entry in names.indexed) {
+      childNames[entry.$1].text = entry.$2;
+    }
+    message = 'Children updated for your household.';
+    // The server save is already confirmed. Optional device/widget refreshes
+    // cannot turn it into a failed save or trigger another management write.
+    unawaited(() async {
+      try {
+        final cached = CachedAccountContext.fromRows(
+          userId: widget.store.userId,
+          member: widget.member,
+          household: widget.household,
+        );
+        if (cached != null) await const AccountContextCache().save(cached);
+        if (!sameAccount) return;
+        final records = await widget.store.load();
+        if (!sameAccount) return;
+        await RelayHomeWidget.instance
+            .sync(records, 'cloud:${widget.store.userId}', DateTime.now())
+            .timeout(const Duration(seconds: 2));
+      } catch (_) {
+        // Returning to Today reloads the confirmed household metadata.
+      }
+    }());
+  });
+
+  Future<void> inviteMember() => run(() async {
+    final address = email.text.trim();
+    final code = await management.inviteMember(address, inviteRole);
+    if (!mounted) return;
+    invitation = code;
+    invitationEmail = address;
+    email.clear();
+    message = 'Invitation ready. Share its code with that family member.';
+    await loadInvitations();
+  });
+
+  Future<void> revokeInvitation(HouseholdInvitation row) async {
+    final approved = await confirmManagement(
+      title: 'Revoke this invitation?',
+      description:
+          'The invitation for ${row.email} will stop working. They will need a new code to join your household.',
+      button: 'Revoke invitation',
+    );
+    if (!approved || !mounted) return;
+    await run(() async {
+      await management.revokeInvitation(row.code);
+      if (!mounted) return;
+      pendingInvitations.removeWhere((value) => value.code == row.code);
+      if (invitation == row.code) invitation = null;
+      message = 'Invitation revoked.';
+      await loadInvitations();
+    });
+  }
+
+  Future<void> removeFamilyMember(Map<String, dynamic> member) async {
+    if (!isOwner ||
+        member['role'] == 'owner' ||
+        member['user_id'] == widget.store.userId) {
+      return;
+    }
+    final approved = await confirmManagement(
+      title: 'Remove ${member['display_name']}?',
+      description: 'They will lose access to this household. Their personal time records are kept. Previously saved data on their device isn’t erased.',
+      button: 'Remove member',
+    );
+    if (!approved || !mounted) return;
+    await run(() async {
+      await management.removeMember(member['user_id'] as String);
+      if (!mounted) return;
+      members.removeWhere((row) => row['user_id'] == member['user_id']);
+      message =
+          '${member['display_name']} was removed. Their own time records were kept privately.';
+      await loadMembers();
+    });
+  }
+
+  Future<void> copyInvitation(String code) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: code));
+      if (mounted) setState(() => message = 'Invitation code copied.');
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () =>
+              message = 'Could not copy. Select the code and copy it manually.',
+        );
       }
     }
   }
+
+  Future<void> openPersonalHistory() => Navigator.push<void>(
+    context,
+    MaterialPageRoute(
+      builder: (_) => AccountSessionGuard(
+        client: widget.store.client,
+        expectedUserId: widget.store.userId,
+        child: PersonalTimeHistoryPage(service: management),
+      ),
+    ),
+  );
 
   Future<RelayState> readFamilyMemberRecords(String userId) async {
     if (userId == widget.store.userId) return widget.store.load();
     // Shared household views are read-only and online-only. They must never
     // populate another person's private offline cache on this account.
-    final row = await Supabase.instance.client
+    final row = await widget.store.client
         .from('parent_records')
         .select('payload')
         .eq('user_id', userId)
@@ -1343,6 +1732,7 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
   }
 
   Future<void> run(Future<void> Function() action) async {
+    if (busy) return;
     setState(() {
       busy = true;
       message = null;
@@ -1352,6 +1742,8 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
     } on PostgrestException catch (e) {
       message = e.message;
     } on CloudSaveException catch (e) {
+      message = e.message;
+    } on HouseholdManagementException catch (e) {
       message = e.message;
     } catch (_) {
       message = 'Could not complete this action. Check your connection and try again.';
@@ -1406,7 +1798,7 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
       title: widget.household['name'],
       children: [
         SignedInAccountEmail(
-          email: Supabase.instance.client.auth.currentUser?.email,
+          email: widget.store.client.auth.currentUser?.email,
         ),
         if (widget.member['role'] == 'owner') ...[
           TextField(
@@ -1417,6 +1809,54 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
           FilledButton(
             onPressed: busy ? null : saveFamilyName,
             child: const Text('Save family name'),
+          ),
+          ExpansionTile(
+            title: const Text('Children'),
+            subtitle: Text(householdChildren(widget.household).join(' · ')),
+            childrenPadding: const EdgeInsets.fromLTRB(0, 8, 0, 16),
+            expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('How many children?'),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (var count = 1; count <= 8; count++)
+                    ChoiceChip(
+                      label: Text('$count'),
+                      selected: childCount == count,
+                      onSelected: busy
+                          ? null
+                          : (_) => setState(() => childCount = count),
+                    ),
+                ],
+              ),
+              for (final entry in childNames.take(childCount).indexed)
+                Padding(
+                  padding: const EdgeInsets.only(top: 14),
+                  child: TextField(
+                    controller: entry.$2,
+                    maxLength: 40,
+                    enabled: !busy,
+                    decoration: InputDecoration(
+                      labelText: 'Child ${entry.$1 + 1} name (optional)',
+                    ),
+                  ),
+                ),
+              const Text(
+                'Blank names become Baby 1, Baby 2 and so on. Keep each child in the same numbered position.',
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Names apply to past Baby Time. Reducing the count hides children from selection without deleting recorded time.',
+              ),
+              const SizedBox(height: 12),
+              FilledButton(
+                onPressed: busy ? null : saveChildren,
+                child: const Text('Save children'),
+              ),
+            ],
           ),
         ],
         Text(householdChildren(widget.household).join(' · ')),
@@ -1431,7 +1871,11 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
               : () => Navigator.push<bool>(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => WidgetAppearance(store: widget.store),
+                    builder: (_) => AccountSessionGuard(
+                      client: widget.store.client,
+                      expectedUserId: widget.store.userId,
+                      child: WidgetAppearance(store: widget.store),
+                    ),
                   ),
                 ),
           icon: const Icon(Icons.palette_outlined),
@@ -1483,38 +1927,68 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
           'Family members',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
+        OutlinedButton.icon(
+          onPressed: busy || loadingMembers || loadingInvitations
+              ? null
+              : refreshHouseholdLists,
+          icon: const Icon(Icons.refresh),
+          label: const Text('Refresh household'),
+        ),
+        if (loadingMembers) const LinearProgressIndicator(),
+        if (memberError != null) Text(memberError!),
         for (final member in members)
-          OutlinedButton(
-            onPressed: busy
-                ? null
-                : () => run(() async {
-                    final records = await readFamilyMemberRecords(
-                      member['user_id'] as String,
-                    );
-                    if (!context.mounted) return;
-                    await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => Scaffold(
-                          appBar: AppBar(
-                            title: Text('${member['display_name']} · Insights'),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              OutlinedButton(
+                onPressed: busy
+                    ? null
+                    : () => run(() async {
+                        final records = await readFamilyMemberRecords(
+                          member['user_id'] as String,
+                        );
+                        final observedAt = DateTime.now();
+                        if (!context.mounted) return;
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => AccountSessionGuard(
+                              client: widget.store.client,
+                              expectedUserId: widget.store.userId,
+                              child: FamilyMemberInsightsPage(
+                                displayName: member['display_name'] as String,
+                                initialRecords: records,
+                                initialObservedAt: observedAt,
+                                loadRecords: () => readFamilyMemberRecords(
+                                  member['user_id'] as String,
+                                ),
+                              ),
+                            ),
                           ),
-                          body: RelayHome(
-                            store: ReadOnlyStore(records),
-                            readOnly: true,
-                          ),
-                        ),
-                      ),
-                    );
-                  }),
-            child: Text(
-              'View ${member['display_name']}’s Insights · ${member['role'] == 'caregiver' ? 'Caregiver' : 'Parent'}',
-            ),
+                        );
+                      }),
+                child: Text(
+                  'View ${member['display_name']}’s Insights · ${member['role'] == 'caregiver' ? 'Caregiver' : 'Parent'}',
+                ),
+              ),
+              if (isOwner &&
+                  member['role'] != 'owner' &&
+                  member['user_id'] != widget.store.userId)
+                TextButton.icon(
+                  onPressed: busy || loadingMembers
+                      ? null
+                      : () => removeFamilyMember(member),
+                  icon: const Icon(Icons.person_remove_outlined),
+                  label: Text('Remove ${member['display_name']}'),
+                ),
+            ],
           ),
         if (widget.member['role'] == 'owner') ...[
           const Divider(),
           TextField(
             controller: email,
+            enabled: !busy,
+            maxLength: 254,
             keyboardType: TextInputType.emailAddress,
             decoration: const InputDecoration(
               labelText: 'Family member’s email',
@@ -1530,32 +2004,80 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
             onChanged: busy ? null : (value) => inviteRole = value!,
           ),
           FilledButton(
-            onPressed: busy
-                ? null
-                : () => run(() async {
-                    invitation = await Supabase.instance.client.rpc(
-                      'relay_invite_member',
-                      params: {
-                        'member_email': email.text.trim(),
-                        'member_role': inviteRole,
-                      },
-                    ) as String;
-                  }),
+            onPressed: busy || loadingInvitations ? null : inviteMember,
             child: const Text('Add family member'),
           ),
-          if (invitation != null) ...[
+          if (invitation != null && invitationError != null) ...[
+            Text('Invitation for ${invitationEmail ?? 'your family member'}'),
             SelectableText(invitation!),
             const Text(
               'Share this code with that family member. It expires after 7 days and works only for the email you entered. They create an account, verify that email, and choose “I have an invitation code.”',
             ),
             OutlinedButton(
-              onPressed: () =>
-                  Clipboard.setData(ClipboardData(text: invitation!)),
+              onPressed: () => copyInvitation(invitation!),
               child: const Text('Copy invitation code'),
             ),
           ],
+          const Text(
+            'Pending invitations',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const Text(
+            'These codes were pending at the last refresh. Refresh to check for accepted or expired invitations. Share each code only with the email shown.',
+          ),
+          if (loadingInvitations) const LinearProgressIndicator(),
+          if (invitationError != null) Text(invitationError!),
+          if (!loadingInvitations &&
+              invitationError == null &&
+              pendingInvitations.isEmpty)
+            const Text('No pending invitations.'),
+          for (final row in pendingInvitations)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      row.email,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${row.role == 'parent' ? 'Parent' : 'Caregiver'} · Expires ${DateFormat.yMMMd().add_jm().format(row.expiresAt.toLocal())}',
+                    ),
+                    const SizedBox(height: 10),
+                    SelectableText(row.code),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        TextButton.icon(
+                          onPressed: busy
+                              ? null
+                              : () => copyInvitation(row.code),
+                          icon: const Icon(Icons.copy),
+                          label: const Text('Copy code'),
+                        ),
+                        TextButton.icon(
+                          onPressed: busy || loadingInvitations
+                              ? null
+                              : () => revokeInvitation(row),
+                          icon: const Icon(Icons.link_off),
+                          label: const Text('Revoke invitation'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
         const Divider(),
+        OutlinedButton.icon(
+          onPressed: busy ? null : openPersonalHistory,
+          icon: const Icon(Icons.history),
+          label: const Text('Your saved time'),
+        ),
         OutlinedButton(
           onPressed: busy ? null : () => run(importLocal),
           child: const Text('Import this device’s history'),
@@ -1599,6 +2121,273 @@ class _HouseholdAccountState extends State<HouseholdAccount> {
       ],
     ),
   );
+}
+
+/// Previous-household copies are private, fixed observations. They are never
+/// loaded through a writable CloudStore or imported into a newly joined family.
+class PersonalTimeHistoryPage extends StatefulWidget {
+  const PersonalTimeHistoryPage({super.key, required this.service, this.cache});
+  final HouseholdManagementService service;
+  final CloudCache? cache;
+
+  @override
+  State<PersonalTimeHistoryPage> createState() =>
+      _PersonalTimeHistoryPageState();
+}
+
+class _PersonalTimeHistoryPageState extends State<PersonalTimeHistoryPage> {
+  List<PersonalTimeArchive> snapshots = [];
+  String? selectedId, error;
+  RelayState? records;
+  bool loading = false;
+  int revision = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  List<String> snapshotNames(Map<String, dynamic> payload) {
+    final names = payload['childNames'];
+    return names is List &&
+            names.isNotEmpty &&
+            names.length <= 8 &&
+            names.every((name) => name is String)
+        ? List<String>.from(names)
+        : ['Baby 1', 'Baby 2'];
+  }
+
+  Future<List<PersonalTimeArchive>> deviceSnapshots() async {
+    final envelope = await (widget.cache ?? defaultCloudCache).read(
+      widget.service.expectedUserId,
+    );
+    if (envelope == null) return [];
+    final observedAt = DateTime.now();
+    final result = <PersonalTimeArchive>[];
+    final current = envelope['current'];
+    if (current is Map) {
+      final payload = Map<String, dynamic>.from(current);
+      result.add(
+        PersonalTimeArchive(
+          id: 'device-current',
+          householdName: 'This device · latest saved copy',
+          childNames: snapshotNames(payload),
+          payload: payload,
+          archivedAt: observedAt,
+          fromDevice: true,
+        ),
+      );
+    }
+    final backups = envelope['backups'];
+    if (backups is List) {
+      for (final entry in backups.indexed) {
+        final value = entry.$2;
+        if (value is! Map || value['payload'] is! Map) continue;
+        final payload = Map<String, dynamic>.from(value['payload'] as Map);
+        result.add(
+          PersonalTimeArchive(
+            id: 'device-backup-${entry.$1}-${value['id'] ?? ''}',
+            householdName: value['label'] as String? ?? 'Device recovery copy',
+            childNames: snapshotNames(payload),
+            payload: payload,
+            archivedAt:
+                DateTime.tryParse(value['createdAt']?.toString() ?? '') ??
+                observedAt,
+            fromDevice: true,
+          ),
+        );
+      }
+    }
+    return result;
+  }
+
+  Future<void> load() async {
+    if (loading) return;
+    setState(() => loading = true);
+    var local = <PersonalTimeArchive>[];
+    var cloud = <PersonalTimeArchive>[];
+    var localFailed = false, cloudFailed = false;
+    await Future.wait([
+      () async {
+        try {
+          local = await deviceSnapshots();
+          if (mounted && local.isNotEmpty) {
+            setState(() {
+              snapshots = [
+                ...local,
+                ...snapshots.where((copy) => !copy.fromDevice),
+              ];
+              selectSnapshot(
+                snapshots.any((copy) => copy.id == selectedId)
+                    ? selectedId
+                    : snapshots.first.id,
+              );
+            });
+          }
+        } catch (_) {
+          localFailed = true;
+        }
+      }(),
+      () async {
+        try {
+          cloud = await widget.service.personalArchives();
+        } catch (_) {
+          cloudFailed = true;
+        }
+      }(),
+    ]);
+    if (!mounted) return;
+    if (localFailed) {
+      local = snapshots.where((copy) => copy.fromDevice).toList();
+    }
+    if (cloudFailed) {
+      cloud = snapshots.where((copy) => !copy.fromDevice).toList();
+    }
+    setState(() {
+      snapshots = [...local, ...cloud];
+      loading = false;
+      error = cloudFailed
+          ? snapshots.isEmpty
+                ? 'Could not load your cloud saved time. Reconnect and tap Refresh.'
+                : 'Could not refresh your cloud saved time. Showing saved copies. Reconnect and tap Refresh.'
+          : localFailed
+          ? 'Could not read this device’s copies. Cloud snapshots are still available. Tap Refresh to retry.'
+          : null;
+      selectSnapshot(
+        snapshots.any((copy) => copy.id == selectedId)
+            ? selectedId
+            : snapshots.firstOrNull?.id,
+      );
+    });
+  }
+
+  void selectSnapshot(String? id) {
+    selectedId = id;
+    final selected = snapshots.where((copy) => copy.id == id).firstOrNull;
+    records = null;
+    if (selected != null) {
+      try {
+        final state = RelayState.fromJson(selected.payload);
+        state.childNames = List<String>.of(selected.childNames);
+        records = state;
+      } catch (_) {
+        error = 'This saved copy could not be read. Choose another copy or refresh.';
+      }
+    }
+    revision++;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = snapshots
+        .where((copy) => copy.id == selectedId)
+        .firstOrNull;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Your saved time'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh your saved time',
+            onPressed: loading ? null : load,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: LayoutBuilder(
+        builder: (context, constraints) => Column(
+          children: [
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: constraints.maxHeight * .45,
+              ),
+              child: SingleChildScrollView(
+                primary: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text(
+                        'Private copies of your own time. Viewing a copy does not add it to another household.',
+                      ),
+                      if (snapshots.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        DropdownButtonFormField<String>(
+                          key: ValueKey('saved-time-selector-$selectedId'),
+                          initialValue: selectedId,
+                          isExpanded: true,
+                          itemHeight: null,
+                          decoration: const InputDecoration(
+                            labelText: 'Saved copy',
+                          ),
+                          items: [
+                            for (final copy in snapshots)
+                              DropdownMenuItem(
+                                value: copy.id,
+                                child: Text(
+                                  '${copy.householdName} · ${DateFormat.yMMMd().add_jm().format(copy.archivedAt.toLocal())}',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                          ],
+                          onChanged: (value) =>
+                              setState(() => selectSnapshot(value)),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          selected?.fromDevice == true
+                              ? 'Device snapshot · May include changes that have not synced.'
+                              : 'Cloud snapshot · Saved when your household access ended.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                      if (error != null) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          error!,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            if (loading)
+              const LinearProgressIndicator(
+                key: ValueKey('saved-time-loading'),
+              ),
+            if (!loading && snapshots.isEmpty && error == null)
+              const Expanded(
+                child: Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Text(
+                      'No previous-household snapshots yet. Your current household time is available in Today and Insights.',
+                    ),
+                  ),
+                ),
+              )
+            else if (records != null && selected != null)
+              Expanded(
+                child: RelayHome(
+                  key: ValueKey('saved-time-$selectedId-$revision'),
+                  store: ReadOnlyStore(records!),
+                  readOnly: true,
+                  observationTime: selected.archivedAt.toLocal(),
+                ),
+              )
+            else
+              const Spacer(),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class PasswordRecovery extends StatefulWidget {

@@ -45,7 +45,7 @@ Future<CachedAccountContext?> fetchAccountContext(
       statusCode: '401',
     );
   }
-  if (member == null) return null;
+  if (member == null || member['is_active'] == false) return null;
   final household = await client
       .from('households')
       .select()
@@ -84,6 +84,7 @@ class CachedAccountContext {
     final householdId = household['id'];
     final names = household['child_names'];
     if (userId.isEmpty ||
+        member['is_active'] == false ||
         member['user_id'] != userId ||
         householdId is! String ||
         householdId.isEmpty ||

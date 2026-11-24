@@ -82,9 +82,14 @@ class Session {
     this.firstUnansweredCheckIn,
     this.lastReminderAt,
     this.autoStopReason,
+    this.careChildren,
     List<Interruption>? interruptions,
   }) : interruptions = interruptions ?? [];
   final Baby? baby;
+
+  /// Children included when All children started; later additions do not
+  /// receive childcare time recorded before they joined the family.
+  List<Baby>? careChildren;
   final int shiftId;
   final ShiftKind kind;
   final DateTime start;
@@ -107,6 +112,8 @@ class Session {
     'firstUnansweredCheckIn': firstUnansweredCheckIn?.toUtc().toIso8601String(),
     'lastReminderAt': lastReminderAt?.toUtc().toIso8601String(),
     'autoStopReason': autoStopReason,
+    if (careChildren != null)
+      'careChildren': careChildren!.map((child) => child.name).toList(),
   };
   factory Session.fromJson(Map<String, dynamic> j) => Session(
     shiftId: j['shiftId'],
@@ -124,10 +131,21 @@ class Session {
         ? null
         : DateTime.parse(j['lastReminderAt']).toLocal(),
     autoStopReason: j['autoStopReason'] as String?,
+    careChildren: (j['careChildren'] as List?)
+        ?.map((child) => Baby.values.byName(child as String))
+        .where((child) => child != Baby.both)
+        .toSet()
+        .toList(),
     interruptions: (j['interruptions'] as List)
         .map((e) => Interruption.fromJson(e))
         .toList(),
   );
+
+  bool caresFor(Baby child) =>
+      baby == child ||
+      (baby == Baby.both &&
+          child != Baby.both &&
+          (careChildren?.contains(child) ?? true));
 }
 
 int overlapSeconds(DateTime a, DateTime b, DateTime from, DateTime to) =>
@@ -403,7 +421,9 @@ class RelayState {
     String? childTwo,
   }) : shifts = shifts ?? [],
        sessions = sessions ?? [],
-       childNames = childNames ?? [childOne ?? 'Baby 1', childTwo ?? 'Baby 2'];
+       childNames = childNames ?? [childOne ?? 'Baby 1', childTwo ?? 'Baby 2'] {
+    freezeLegacyCareChildren();
+  }
   final List<Shift> shifts;
   final List<Session> sessions;
   bool alerts;
@@ -412,6 +432,16 @@ class RelayState {
   String? lastWidgetRequestId;
   WidgetColors widgetColors;
   List<String> childNames;
+  void freezeLegacyCareChildren() {
+    for (final session in sessions) {
+      if (session.baby == Baby.both && session.careChildren == null) {
+        session.careChildren = List.unmodifiable(
+          childChoices.take(childNames.length),
+        );
+      }
+    }
+  }
+
   String get childOne => childNames.first;
   set childOne(String value) => childNames[0] = value;
   String get childTwo => childNames.length > 1 ? childNames[1] : 'Baby 2';
@@ -467,7 +497,15 @@ class RelayState {
       sort();
     }
     sessions.add(
-      Session(shiftId: block.id, kind: kind, start: now, baby: selectedBaby),
+      Session(
+        shiftId: block.id,
+        kind: kind,
+        start: now,
+        baby: selectedBaby,
+        careChildren: selectedBaby == Baby.both
+            ? List.unmodifiable(childChoices.take(childNames.length))
+            : null,
+      ),
     );
   }
 
@@ -603,9 +641,7 @@ class RelayState {
               s.kind == ShiftKind.point &&
               (unassignedOnly
                   ? s.baby == null
-                  : baby == null ||
-                        s.baby == baby ||
-                        (baby != Baby.both && s.baby == Baby.both)),
+                  : baby == null || s.caresFor(baby)),
         )
         .fold(
           0,

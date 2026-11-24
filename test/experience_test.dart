@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:relay/app_theme.dart';
 import 'package:relay/experience.dart';
 import 'package:relay/release_notes.dart';
+import 'package:relay/rating_preferences.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -117,7 +118,7 @@ void main() {
         ),
       );
       expect(
-        find.text('Control your timer from the lock screen'),
+        find.text('Cancel a baby selection'),
         findsNothing,
       );
       expect(find.text('A look that suits you'), findsOneWidget);
@@ -381,6 +382,10 @@ void main() {
     await tester.tap(find.text('Rate Relay on Google Play'));
     await tester.pumpAndSettle();
     expect(urls, [Uri.parse(relayPlayUrl)]);
+    expect(
+      RelayRatingPreferences(await SharedPreferences.getInstance()).stopped,
+      isTrue,
+    );
     expect(find.textContaining('Could not open Google Play.'), findsOneWidget);
   });
 

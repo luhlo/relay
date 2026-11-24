@@ -1,16 +1,37 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'account_session_guard.dart';
 import 'support_service.dart';
 
-class SupportDashboardPage extends StatefulWidget {
-  const SupportDashboardPage({super.key, this.service});
+class SupportDashboardPage extends StatelessWidget {
+  const SupportDashboardPage({super.key, this.service, this.client});
   final RelaySupportService? service;
+  final SupabaseClient? client;
+
   @override
-  State<SupportDashboardPage> createState() => _SupportDashboardPageState();
+  Widget build(BuildContext context) {
+    final authClient = client ?? Supabase.instance.client;
+    return AccountSessionGuard(
+      client: authClient,
+      expectedUserId: authClient.auth.currentUser?.id ?? '',
+      requireFreshSession: true,
+      closedMessage: 'Sign in again to the authorized support account, then reopen the support dashboard.',
+      child: _SupportDashboardContents(service: service),
+    );
+  }
 }
 
-class _SupportDashboardPageState extends State<SupportDashboardPage> {
+class _SupportDashboardContents extends StatefulWidget {
+  const _SupportDashboardContents({this.service});
+  final RelaySupportService? service;
+  @override
+  State<_SupportDashboardContents> createState() =>
+      _SupportDashboardContentsState();
+}
+
+class _SupportDashboardContentsState extends State<_SupportDashboardContents> {
   late Future<Map<String, dynamic>> _reports;
   @override
   void initState() {

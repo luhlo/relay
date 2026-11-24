@@ -1,5 +1,5 @@
 /* Public app-shell cache. Never cache auth, RPCs, feedback, or account records. */
-const CACHE = 'relay-shell-1.18.0-23';
+const CACHE = 'relay-shell-1.19.0-24';
 const CORE = [
   './', 'index.html', 'flutter_bootstrap.js', 'main.dart.js',
   'manifest.json', 'favicon.png',

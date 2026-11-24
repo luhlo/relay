@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' show DateFormat;
@@ -21,6 +22,15 @@ class TrendDay {
           .length,
       hasWork = _recorded(data, day, now, ShiftKind.focus),
       hasBaby = _recorded(data, day, now, ShiftKind.point);
+  TrendDay._(this.day, _TrendTotals totals)
+    : actual = totals.actual,
+      lost = totals.lost,
+      total = totals.actual + totals.lost,
+      baby = totals.baby,
+      care = Map.unmodifiable(totals.care),
+      interruptions = totals.interruptions,
+      hasWork = totals.hasWork,
+      hasBaby = totals.hasBaby;
   final DateTime day;
   final int total, actual, lost, baby, interruptions;
   final Map<Baby, int> care;
@@ -41,21 +51,134 @@ class TrendDay {
   }
 }
 
+class _TrendTotals {
+  _TrendTotals(Iterable<Baby> children)
+    : care = {for (final child in children) child: 0};
+  int actual = 0, lost = 0, baby = 0, interruptions = 0;
+  bool hasWork = false, hasBaby = false;
+  final Map<Baby, int> care;
+}
+
 List<TrendDay> dailyTrends(
   RelayState data,
   DateTime ending,
   int days,
   DateTime now,
 ) {
+  if (days <= 0) return const [];
   final end = dayStart(ending.isAfter(now) ? now : ending);
-  return List.generate(
-    days,
-    (i) => TrendDay(
-      DateTime(end.year, end.month, end.day - days + 1 + i),
-      data,
-      now,
-    ),
+  final from = DateTime(end.year, end.month, end.day - days + 1);
+  final until = nextDay(end);
+  final children = data.availableBabies;
+  final totals = <DateTime, _TrendTotals>{
+    for (var day = from; day.isBefore(until); day = nextDay(day))
+      day: _TrendTotals(children),
+  };
+
+  // Index only the calendar days touched by each record. The previous version
+  // scanned every saved session for every selected day (including empty years).
+  void overlapDays(
+    DateTime start,
+    DateTime finish,
+    void Function(DateTime) visit,
+  ) {
+    var day = dayStart(start);
+    if (day.isBefore(from)) day = from;
+    while (day.isBefore(until) && day.isBefore(finish)) {
+      visit(day);
+      day = nextDay(day);
+    }
+  }
+
+  for (final session in data.sessions) {
+    final interrupted = <DateTime, int>{};
+    for (final interruption in session.interruptions) {
+      final countDay = totals[dayStart(interruption.start)];
+      if (countDay != null) countDay.interruptions++;
+      final finish = interruption.end ?? now;
+      overlapDays(interruption.start, finish, (day) {
+        final seconds = overlapSeconds(
+          interruption.start,
+          finish,
+          day,
+          nextDay(day),
+        );
+        totals[day]!.lost += seconds;
+        interrupted[day] = (interrupted[day] ?? 0) + seconds;
+      });
+    }
+    final finish = session.end ?? now;
+    overlapDays(session.start, finish, (day) {
+      final value = totals[day]!;
+      final seconds = overlapSeconds(session.start, finish, day, nextDay(day));
+      if (session.kind == ShiftKind.focus) {
+        value.hasWork = true;
+        value.actual += max(0, seconds - (interrupted[day] ?? 0));
+      } else {
+        value.hasBaby = true;
+        value.baby += seconds;
+        for (final child in children) {
+          if (session.caresFor(child)) {
+            value.care[child] = value.care[child]! + seconds;
+          }
+        }
+      }
+    });
+  }
+  return List.unmodifiable(
+    totals.entries.map((entry) => TrendDay._(entry.key, entry.value)),
   );
+}
+
+/// Reuse completed history; only an active timer's current day changes with the
+/// clock. The serialized record fingerprint also catches in-place mutations.
+class DailyTrendsCache {
+  String? _fingerprint;
+  DateTime? _ending, _sampledAt;
+  int? _days;
+  List<TrendDay>? _points;
+
+  List<TrendDay> read(
+    RelayState data,
+    DateTime ending,
+    int days,
+    DateTime now,
+  ) {
+    final fingerprint = jsonEncode({
+      'children': data.childNames,
+      'sessions': data.sessions.map((session) => session.toJson()).toList(),
+    });
+    final end = dayStart(ending.isAfter(now) ? now : ending);
+    if (_points == null ||
+        _fingerprint != fingerprint ||
+        _ending != end ||
+        _days != days ||
+        dayStart(_sampledAt!) != dayStart(now)) {
+      _points = dailyTrends(data, end, days, now);
+      _fingerprint = fingerprint;
+      _ending = end;
+      _days = days;
+    } else if (_sampledAt != now &&
+        data.active != null &&
+        _points!.isNotEmpty) {
+      final today = dayStart(now);
+      final first = _points!.first.day;
+      final index = DateTime.utc(
+        today.year,
+        today.month,
+        today.day,
+      ).difference(DateTime.utc(first.year, first.month, first.day)).inDays;
+      if (index >= 0 && index < _points!.length) {
+        _points = List.unmodifiable([
+          ..._points!.take(index),
+          TrendDay(today, data, now),
+          ..._points!.skip(index + 1),
+        ]);
+      }
+    }
+    _sampledAt = now;
+    return _points!;
+  }
 }
 
 class TrendsCard extends StatefulWidget {
@@ -76,6 +199,7 @@ class TrendsCard extends StatefulWidget {
 class _TrendsCardState extends State<TrendsCard> {
   int days = 7, mode = 0;
   DateTime? selected;
+  final _dailyCache = DailyTrendsCache();
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -91,7 +215,7 @@ class _TrendsCardState extends State<TrendsCard> {
                   .difference(DateTime.utc(start.year, start.month, start.day))
                   .inDays +
               1;
-    final points = dailyTrends(
+    final points = _dailyCache.read(
       widget.data,
       widget.ending,
       countDays,
@@ -272,7 +396,12 @@ class _TrendsCardState extends State<TrendsCard> {
                       ),
                     ),
                     const SizedBox(width: 6),
-                    Text(s.label, style: const TextStyle(fontSize: 12)),
+                    Flexible(
+                      child: Text(
+                        s.label,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
                   ],
                 ),
             ],
@@ -492,5 +621,17 @@ class _TrendPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _TrendPainter oldDelegate) => true;
+  bool shouldRepaint(covariant _TrendPainter oldDelegate) =>
+      !identical(days, oldDelegate.days) ||
+      selected != oldDelegate.selected ||
+      labelColor != oldDelegate.labelColor ||
+      gridColor != oldDelegate.gridColor ||
+      highlightColor != oldDelegate.highlightColor ||
+      pointCenterColor != oldDelegate.pointCenterColor ||
+      series.length != oldDelegate.series.length ||
+      series.indexed.any(
+        (entry) =>
+            entry.$2.label != oldDelegate.series[entry.$1].label ||
+            entry.$2.color != oldDelegate.series[entry.$1].color,
+      );
 }

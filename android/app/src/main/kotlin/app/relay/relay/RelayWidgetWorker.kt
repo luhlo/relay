@@ -70,16 +70,21 @@ class RelayWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
             if (currentContext() == source) {
                 val snapshot = (completion?.get("snapshot") as? Map<*, *>)
                     ?.entries?.associate { it.key.toString() to it.value }
-                if (snapshot?.get("context") == source) {
-                    val update = snapshot.toMutableMap()
-                    (completion["syncPending"] as? Boolean)?.let { update["syncPending"] = it }
-                    (completion["syncBlocked"] as? Boolean)?.let { update["syncBlocked"] = it }
+                val freshSnapshot = snapshot?.takeIf { it["context"] == source }
+                if (freshSnapshot != null) {
+                    val update = freshSnapshot.toMutableMap()
+                    (completion?.get("syncPending") as? Boolean)?.let { update["syncPending"] = it }
+                    (completion?.get("syncBlocked") as? Boolean)?.let { update["syncBlocked"] = it }
                     RelayWidgetProvider.updateSnapshot(applicationContext, update, source)
                 }
                 val error = if (completion?.get("success") == true) completion["error"] as? String
                     else (completion?.get("error") as? String)
                         ?: "Save unconfirmed. Open Relay to refresh."
-                RelayWidgetProvider.reportResult(applicationContext, source, error, requestId)
+                if (freshSnapshot != null) {
+                    RelayWidgetProvider.reportResult(applicationContext, source, error, requestId)
+                } else {
+                    RelayWidgetProvider.reportUnconfirmed(applicationContext, source, error, requestId)
+                }
                 if (completion?.get("success") == true) {
                     RelayCloudSyncWorker.enqueueIfNeeded(applicationContext)
                     applicationContext.sendBroadcast(Intent("app.relay.relay.widget.STATE_CHANGED")
@@ -94,7 +99,7 @@ class RelayWidgetWorker(context: Context, parameters: WorkerParameters) : Corout
             throw cancelled
         } catch (_: Exception) {
             if (currentContext() == source) {
-                RelayWidgetProvider.reportResult(
+                RelayWidgetProvider.reportUnconfirmed(
                     applicationContext, source, "Could not save. Open Relay to refresh.", requestId,
                 )
                 if (action["action"] == "guard") RelayTimerGuard.retryAfterFailure(applicationContext, source)

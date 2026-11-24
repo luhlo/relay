@@ -74,7 +74,7 @@ object RelayTimerGuard {
     @Synchronized
     fun clear(context: Context) {
         cancelAlarm(context)
-        notifications(context).cancel(CHECK_IN_ID)
+        cancelCheckIn(context)
         notifications(context).cancel(STOPPED_ID)
         preferences(context).edit().clear().commit()
     }
@@ -118,6 +118,7 @@ object RelayTimerGuard {
         val status = guard.optString("status", "work")
         val stamp = "$source:$sessionStart:$status:$reminder"
         if (preferences(context).getString("reminderPosted", null) == stamp || !canNotify(context)) return
+        revokeNotificationActions(context)
         val token = UUID.randomUUID().toString()
         preferences(context).edit().putString("notificationToken", token).commit()
         val question = when (status) {
@@ -193,14 +194,34 @@ object RelayTimerGuard {
 
     private fun cancelCheckIn(context: Context) {
         notifications(context).cancel(CHECK_IN_ID)
+        revokeNotificationActions(context)
+    }
+
+    private fun revokeNotificationActions(context: Context) {
+        val token = preferences(context).getString("notificationToken", null)
+        for (action in listOf(CONFIRM_ACTION, STOP_ACTION)) {
+            // Also cancel the pre-token URI used by installed older versions.
+            for (identity in listOf(token, null).distinct()) {
+                PendingIntent.getBroadcast(context, notificationRequestCode(action),
+                    notificationIntent(context, action, identity),
+                    PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)?.cancel()
+            }
+        }
         preferences(context).edit().remove("notificationToken").commit()
     }
 
+    private fun notificationRequestCode(action: String) = if (action == CONFIRM_ACTION) 940102 else 940103
+
+    private fun notificationIntent(context: Context, action: String, token: String?) =
+        Intent(context, RelayTimerGuardReceiver::class.java).apply {
+            this.action = action
+            val name = if (action == CONFIRM_ACTION) "confirm" else "stop"
+            data = Uri.parse("relay-guard://$name" + if (token == null) "" else "/$token")
+        }
+
     private fun notificationAction(context: Context, source: String, sessionStart: String, token: String, action: String): PendingIntent =
-        PendingIntent.getBroadcast(context, if (action == CONFIRM_ACTION) 940102 else 940103,
-            Intent(context, RelayTimerGuardReceiver::class.java).apply {
-                this.action = action
-                data = Uri.parse(if (action == CONFIRM_ACTION) "relay-guard://confirm" else "relay-guard://stop")
+        PendingIntent.getBroadcast(context, notificationRequestCode(action),
+            notificationIntent(context, action, token).apply {
                 putExtra("context", source)
                 putExtra("sessionStart", sessionStart)
                 putExtra("guardToken", token)

@@ -1,7 +1,7 @@
 /// Change this ID only when a release has something useful to announce.
 /// Patch builds and time passing do not make the announcement appear again.
-const relayFeatureReleaseId = '2026-11-offline-tracking';
-const relayFeatureReleaseVersion = '1.18.0';
+const relayFeatureReleaseId = '2026-11-household-controls';
+const relayFeatureReleaseVersion = '1.19.0';
 
 class RelayReleaseNote {
   const RelayReleaseNote(this.title, this.detail, {this.androidOnly = false});
@@ -12,29 +12,29 @@ class RelayReleaseNote {
 
 const relayReleaseNotes = [
   RelayReleaseNote(
-    'Keep tracking when you’re offline',
-    'After connecting your account on this device, timers and schedules save here first and sync when a connection is available. A status message shows what is waiting to sync. If two devices make conflicting changes, you can review them without losing the saved copies.',
+    'Keep your household up to date',
+    'Household owners can change children’s names and count, revoke pending invitations, and remove a caregiver’s household access from Settings.',
   ),
   RelayReleaseNote(
-    'Control your timer from the lock screen',
-    'See Work Time or your child’s name, then interrupt, resume or end the timer. Turn the lock-screen timer on or off in Settings.',
+    'Cancel a baby selection',
+    'Changed your mind in the widget? Tap Cancel to return to your timer without starting or ending a session. Timer and lock-screen controls also recover more clearly when a save needs checking.',
     androidOnly: true,
   ),
   RelayReleaseNote(
     'A look that suits you',
-    'Choose Light, Dark or Follow System in Appearance & help. Your widget keeps its own color settings.',
+    'Controls and chart labels fit better when you use larger text. Choose Light, Dark or Follow System in Appearance & help; widget colors remain customizable.',
   ),
   RelayReleaseNote(
-    'Easier sign-in',
-    'Show or hide your password while typing, and confirm before signing out.',
+    'Clearer Insights',
+    'Long date ranges load faster. Another caregiver’s Insights shows when it was fetched, with Refresh to check for new activity.',
   ),
   RelayReleaseNote(
-    'Help when you need it',
-    'Find answers, replay the introduction, or send a question, problem or feature idea from Settings.',
+    'Your saved time stays yours',
+    'Removing household access keeps personal time records. You can view your saved history privately, including earlier household snapshots.',
   ),
   RelayReleaseNote(
-    'Share Relay with your people',
-    'Use Share Relay to send the app’s link, or open its Google Play listing to leave a review.',
+    'Help shape Relay',
+    'After you have used Relay, an optional invitation lets you leave an honest review, send private feedback, ask again later, or turn reminders off.',
   ),
   RelayReleaseNote(
     'Optional technical reports',

@@ -200,16 +200,23 @@ class CloudStore extends RelayStore {
     if (_scope == null) {
       final member = await client
           .from('household_members')
-          .select('household_id')
+          .select('household_id,is_active')
           .eq('user_id', userId)
           .single()
           .timeout(networkTimeout);
       _checkOwner();
+      if (member['is_active'] == false) {
+        throw CloudSaveException(
+          'Your household access has changed. Reopen Settings to connect a household. Your saved time is kept.',
+        );
+      }
       _resolvedHouseholdId = member['household_id'] as String;
     }
     final row = await client
         .from('parent_records')
-        .select('revision,payload,household_members!inner(household_id)')
+        .select(
+          'revision,payload,household_members!inner(household_id,is_active)',
+        )
         .eq('user_id', userId)
         .single()
         .timeout(networkTimeout);
@@ -218,6 +225,11 @@ class CloudStore extends RelayStore {
     // parent_records itself has no household_id; a separate membership request
     // would leave a leave/rejoin race before this payload was fetched.
     final membership = row['household_members'];
+    if (membership is Map && membership['is_active'] == false) {
+      throw CloudSaveException(
+        'Your household access has changed. Reopen Settings to connect a household. Your saved time is kept.',
+      );
+    }
     if (membership is! Map || membership['household_id'] is! String) {
       throw const FormatException('Missing household scope in records.');
     }

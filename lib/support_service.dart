@@ -1,6 +1,6 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-const relaySupportVersion = '1.18.0+23';
+const relaySupportVersion = '1.19.0+24';
 
 class RelaySupportException implements Exception {
   const RelaySupportException(this.message);

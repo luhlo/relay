@@ -10,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'app_theme.dart';
 import 'diagnostics.dart';
 import 'release_notes.dart';
+import 'rating_preferences.dart';
 import 'support_dashboard.dart';
 import 'support_service.dart';
 
@@ -341,6 +342,12 @@ class _RelayExperienceSettingsState extends State<RelayExperienceSettings> {
 
   Future<void> _rate() async {
     try {
+      await RelayRatingPreferences(await SharedPreferences.getInstance())
+          .stopAsking();
+    } catch (_) {
+      // Optional reminder preferences must not block a manual store visit.
+    }
+    try {
       final opened =
           await (widget.openUrl ??
               (uri) => launchUrl(uri, mode: LaunchMode.externalApplication))(
@@ -529,7 +536,7 @@ const _relayFaqs = [
   ),
   (
     'How do I track more than one child?',
-    'Open Settings to set the number of children and their names. Blank names become Baby 1, Baby 2 and so on. Start Baby Time, then choose a child or All children. Shared care appears in each child’s totals, while total childcare counts the elapsed time once.',
+    'Choose the number of children and their names when creating your household. The family owner can edit them later in Household settings. For device-only use, change them in Settings. Blank names become Baby 1, Baby 2 and so on. Start Baby Time, then choose a child or All children. Shared care appears in each child’s totals, while total childcare counts the elapsed time once. Older All children sessions keep the children included when they started.',
   ),
   (
     'Do I need an account?',

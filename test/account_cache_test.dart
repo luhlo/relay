@@ -92,6 +92,37 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  test('inactive membership cannot restore cached household access', () async {
+    expect(
+      CachedAccountContext.fromRows(
+        userId: 'owner-id',
+        member: {..._member('owner-id'), 'is_active': false},
+        household: _household(),
+      ),
+      isNull,
+    );
+    var householdReads = 0;
+    final client = await _client(
+      request: (request) async {
+        if (request.url.path.endsWith('/household_members')) {
+          return http.Response(
+            jsonEncode({..._member('owner-id'), 'is_active': false}),
+            200,
+          request: request,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        householdReads++;
+        throw StateError(
+          'Removed membership must not read the former household.',
+        );
+      },
+    );
+    addTearDown(client.dispose);
+    expect(await fetchAccountContext(client, 'owner-id'), isNull);
+    expect(householdReads, 0);
+  });
+
   test('household context is isolated to the saved owner', () async {
     const cache = AccountContextCache();
     await cache.save(_context('first-owner'));

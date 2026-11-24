@@ -189,6 +189,7 @@ class RelayWidgetProviderTest {
             val root = render(376, 82)
             assertEquals(View.VISIBLE, visibility(root, R.id.widget_picker))
             assertEquals(View.GONE, visibility(root, R.id.widget_normal))
+            assertEquals("Cancel", text(root, R.id.widget_picker_cancel))
             assertFits(root)
             if (count <= 3) {
                 assertEquals(View.VISIBLE, visibility(root, R.id.widget_baby_options))
@@ -208,9 +209,65 @@ class RelayWidgetProviderTest {
                 assertEquals(View.VISIBLE, visibility(root, R.id.widget_picker_carousel))
                 assertEquals("Child 1", text(root, R.id.widget_selected_baby))
             }
-            pick("PICK_CANCEL")
+            RelayWidgetProvider().onReceive(context, click(root, R.id.widget_picker_cancel))
             assertEquals(View.GONE, visibility(render(), R.id.widget_picker))
         }
+    }
+
+    @Test
+    fun visiblePickerCancelRestoresEveryModeWithoutChangingTheTimerOrOpeningRelay() {
+        val prefs = context.getSharedPreferences("relay.home_widget.v1", Context.MODE_PRIVATE)
+        val trackedKeys = setOf("context", "status", "sessionStart", "elapsedSeconds", "running", "savedAt", "childNames", "timerLabel", "subtitle")
+        for (mode in listOf("idle", "work", "interrupted", "baby")) {
+            for (count in listOf(1, 2, 3, 4, 8)) {
+                snapshot(mode, count = count, elapsedSeconds = 345)
+                val before = prefs.all.filterKeys { it in trackedKeys }
+                pick("PICK_BABY")
+                val chooser = render(176, 82)
+                assertEquals(View.VISIBLE, visibility(chooser, R.id.widget_picker_cancel))
+                val cancel = click(chooser, R.id.widget_picker_cancel)
+                assertEquals("app.relay.relay.widget.PICK_CANCEL", cancel.action)
+                assertNull(RelayWidgetProvider.consumeAction(context, Intent(cancel)))
+                RelayWidgetProvider().onReceive(context, cancel)
+                val restored = render(176, 82)
+                assertEquals(View.GONE, visibility(restored, R.id.widget_picker))
+                assertEquals(View.VISIBLE, visibility(restored, R.id.widget_normal))
+                assertEquals(before, prefs.all.filterKeys { it in trackedKeys })
+                assertEquals(-1, prefs.getInt("pickerPage", 0))
+                assertEquals(if (mode == "idle") View.VISIBLE else View.GONE, visibility(restored, R.id.widget_start_actions))
+                if (mode != "idle") {
+                    assertEquals(View.VISIBLE, visibility(restored, R.id.widget_session_actions))
+                    assertEquals("End", text(restored, R.id.widget_end))
+                }
+                assertNull(shadowOf(context).nextStartedActivity)
+            }
+        }
+    }
+
+    @Test
+    fun pickerCancelAndSelectionsFitCompactSizesAndUseNavigationAppearance() {
+        for (scale in listOf(1f, 1.3f)) {
+            RuntimeEnvironment.setFontScale(scale)
+            for ((width, height) in listOf(110 to 56, 176 to 82, 376 to 82)) {
+                for (count in 1..8) {
+                    snapshot(count = count, colors = mapOf("version" to 3, "navigation" to 0xFF345678,
+                        "text" to mapOf("navigation" to Color.WHITE)))
+                    pick("PICK_BABY")
+                    val root = render(width, height)
+                    val cancel = root.findViewById<TextView>(R.id.widget_picker_cancel)
+                    assertEquals(width, cancel.width)
+                    assertEquals(20, cancel.height)
+                    assertTrue(cancel.text.toString().isNotEmpty())
+                    assertTrue(cancel.hasOnClickListeners())
+                    assertEquals(0xFF345678.toInt(), backgroundColor(root, R.id.widget_picker_cancel))
+                    assertEquals(Color.WHITE, cancel.currentTextColor)
+                    assertEquals(height - 20, root.findViewById<View>(R.id.widget_picker_choices).height)
+                    assertFits(root)
+                    RelayWidgetProvider().onReceive(context, click(root, R.id.widget_picker_cancel))
+                }
+            }
+        }
+        RuntimeEnvironment.setFontScale(1f)
     }
 
     @Test
@@ -456,7 +513,7 @@ class RelayWidgetProviderTest {
                 assertEquals(0, buttons.first().left)
                 for ((index, button) in buttons.withIndex()) {
                     assertTrue(abs(button.width - width / buttons.size) <= 1)
-                    assertEquals(height, button.height)
+                    assertEquals(height - 20, button.height)
                     if (index > 0) assertEquals(buttons[index - 1].right, button.left)
                 }
                 assertEquals(width, buttons.last().right)
@@ -839,6 +896,55 @@ class RelayWidgetProviderTest {
         assertEquals("Work time", text(root, R.id.widget_timer_label))
         assertEquals("Could not save", root.findViewById<View>(R.id.widget_status).contentDescription)
         assertNotNull(RelayWidgetProvider.consumeAction(context, click(root, R.id.widget_interruption)))
+    }
+
+    @Test
+    fun unacknowledgedWorkerSaveImmediatelyRequiresRecoveryInsteadOfOldControls() {
+        snapshot("work")
+        val root = render(176, 82)
+        val interruption = click(root, R.id.widget_interruption)
+        val request = requireNotNull(RelayWidgetProvider.consumeAction(context, interruption))["requestId"] as String
+        val staleEnd = click(root, R.id.widget_end)
+        assertTrue(RelayWidgetProvider.markPending(context, source, request))
+
+        // The worker timed out or Dart returned an uncertain save without a snapshot.
+        RelayWidgetProvider.reportUnconfirmed(context, source, "Save unconfirmed. Open Relay to refresh.", request)
+        val recovery = render(176, 82)
+        assertEquals("Open Relay to refresh", text(recovery, R.id.widget_work))
+        assertEquals(View.GONE, visibility(recovery, R.id.widget_session_actions))
+        assertNull(RelayWidgetProvider.consumeAction(context, staleEnd))
+        assertTrue(recovery.findViewById<View>(R.id.widget_work).performClick())
+        assertEquals(MainActivity::class.java.name, shadowOf(context).nextStartedActivity?.component?.className)
+
+        // A fresh read, not another tap, reconciles the actual interrupted session.
+        snapshot("interrupted", elapsedSeconds = 10)
+        val refreshed = render(176, 82)
+        assertEquals("Resume", text(refreshed, R.id.widget_interruption))
+        assertEquals(View.VISIBLE, visibility(refreshed, R.id.widget_session_actions))
+        assertNotNull(RelayWidgetProvider.consumeAction(context, click(refreshed, R.id.widget_end)))
+    }
+
+    @Test
+    fun unconfirmedGuardPreservesAnotherReceiptButRequiresFreshStateAndRejectsOtherAccounts() {
+        snapshot("baby")
+        RelayWidgetProvider.reportUnconfirmed(context, source, null, "guard-with-unknown-save")
+        assertEquals("Open Relay to refresh", text(render(), R.id.widget_work))
+        assertEquals(View.GONE, visibility(render(), R.id.widget_session_actions))
+        snapshot("work")
+        assertTrue(RelayWidgetProvider.markPending(context, source, "newer-user-tap"))
+        RelayWidgetProvider.reportUnconfirmed(context, source, null, "older-guard")
+        assertEquals("Open Relay", text(render(), R.id.widget_timer_label))
+        val prefs = context.getSharedPreferences("relay.home_widget.v1", Context.MODE_PRIVATE)
+        assertEquals("newer-user-tap", prefs.getString("pendingRequestId", null))
+        assertTrue(prefs.getBoolean("needsRefresh", false))
+        RelayWidgetProvider.reportResult(context, source, "Could not queue this change", "newer-user-tap")
+        assertTrue(prefs.getBoolean("needsRefresh", false))
+        assertEquals("Open Relay to refresh", text(render(), R.id.widget_work))
+
+        snapshot("work", sourceId = "cloud:another-parent")
+        RelayWidgetProvider.reportUnconfirmed(context, source, null, "old-account-result")
+        assertFalse(prefs.getBoolean("needsRefresh", false))
+        assertEquals("Work time", text(render(), R.id.widget_timer_label))
     }
 
     @Test

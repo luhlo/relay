@@ -340,10 +340,31 @@ open class RelayWidgetProvider : AppWidgetProvider() {
                 val prefs = preferences(context)
                 prefs.edit().apply {
                     putString("message", error.orEmpty().take(160))
-                    if (requestId != null && requestId == prefs.getString("pendingRequestId", null)) {
+                    if (requestId != null && requestId == prefs.getString("pendingRequestId", null) &&
+                        !prefs.getBoolean("needsRefresh", false)) {
                         remove("pendingRequestId").remove("pendingAt").remove("needsRefresh")
                     }
                 }.commit()
+                refreshAll(context)
+            }
+        }
+
+        /** A save may have committed. Keep old controls blocked until a fresh snapshot arrives. */
+        @JvmStatic
+        fun reportUnconfirmed(context: Context, expectedContext: String, error: String?, requestId: String?) {
+            synchronized(widgetLock) {
+                if (currentContext(context) != expectedContext) return
+                val prefs = preferences(context)
+                val pending = prefs.getString("pendingRequestId", null)
+                // Preserve a later tap's receipt, but require fresh state for either result.
+                prefs.edit()
+                    .putString("pendingRequestId", pending ?: requestId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString())
+                    .putLong("pendingAt", prefs.getLong("pendingAt", System.currentTimeMillis()))
+                    .putBoolean("needsRefresh", true)
+                    .putInt("pickerPage", -1)
+                    .putString("message", (error?.takeIf { it.isNotBlank() }
+                        ?: "Save unconfirmed. Open Relay to refresh.").take(160))
+                    .commit()
                 refreshAll(context)
             }
         }
@@ -581,6 +602,7 @@ open class RelayWidgetProvider : AppWidgetProvider() {
                 style(R.id.widget_all_babies, "allBabies")
                 style(R.id.widget_previous_baby, "navigation")
                 style(R.id.widget_next_baby, "navigation")
+                style(R.id.widget_picker_cancel, "navigation")
                 style(R.id.widget_status, "notice")
                 style(R.id.widget_error, "notice")
                 rv.setInt(R.id.widget_session_summary, "setBackgroundColor", colors.getValue("timer"))
@@ -603,6 +625,7 @@ open class RelayWidgetProvider : AppWidgetProvider() {
                 rv.setViewVisibility(R.id.widget_normal, if (choosing) View.GONE else View.VISIBLE)
                 rv.setViewVisibility(R.id.widget_picker, if (choosing) View.VISIBLE else View.GONE)
                 if (choosing) {
+                    rv.setOnClickPendingIntent(R.id.widget_picker_cancel, picker(context, id, PICK_CANCEL))
                     val carousel = names.size > 3
                     rv.setViewVisibility(R.id.widget_baby_options, if (carousel) View.GONE else View.VISIBLE)
                     rv.setViewVisibility(R.id.widget_picker_carousel, if (carousel) View.VISIBLE else View.GONE)

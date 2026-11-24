@@ -1,0 +1,4 @@
+[functions.relay-support]
+# Guest reports use the publishable apikey header. Private reads verify Auth
+# with getUser in the handler and the service-only confirmed-email allowlist.
+verify_jwt = false
